@@ -26,6 +26,9 @@ from musetric_toolkit.separate_audio.system_info import (
 from musetric_toolkit.transcribe_audio.download_progress import (
     intercept_hf_downloads,
 )
+from musetric_toolkit.transcribe_audio.language_detector import (
+    detect_language_fulltrack,
+)
 
 
 def configure_warning_filters(log_level: str) -> None:
@@ -264,13 +267,18 @@ def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
             },
         )
     audio = whisperx.load_audio(audio_path)
+    detected_language = detect_language_fulltrack(
+        model,
+        audio,
+        sample_rate=16000,
+    )
     progress_tracker = ProgressTracker()
     progress_tracker.report_fraction(0.0)
     with intercept_progress_lines(progress_tracker):
         result = model.transcribe(
             audio,
             batch_size=1,
-            language=None,
+            language=detected_language,
             chunk_size=10,
             print_progress=True,
             combined_progress=True,
@@ -278,7 +286,7 @@ def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
         progress_tracker.ensure_minimum(0.5)
 
     segments = result.get("segments", [])
-    detected_language = result.get("language")
+    detected_language = result.get("language", detected_language)
 
     try:
         with intercept_hf_downloads("WhisperX alignment model"):
