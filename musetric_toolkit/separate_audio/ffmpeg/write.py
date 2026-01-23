@@ -9,7 +9,6 @@ def write_audio_file(
     output_path: str,
     audio_time_channels: np.ndarray,
     sample_rate: int,
-    output_format: str,
 ) -> None:
     if audio_time_channels.dtype != np.float32:
         audio_time_channels = audio_time_channels.astype(np.float32, order="C")
@@ -26,12 +25,16 @@ def write_audio_file(
         "-",
     ]
 
-    if output_format == "flac":
-        ffmpeg_command += ["-c:a", "flac", "-sample_fmt", "s32"]
-    elif output_format == "wav":
-        ffmpeg_command += ["-c:a", "pcm_f32le"]
-
-    ffmpeg_command += ["-f", output_format, "-y", output_path]
+    ffmpeg_command += [
+        "-c:a",
+        "flac",
+        "-sample_fmt",
+        "s32",
+        "-f",
+        "flac",
+        "-y",
+        output_path,
+    ]
 
     pcm_interleaved_bytes = audio_time_channels.tobytes(order="C")
 
