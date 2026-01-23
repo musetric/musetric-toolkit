@@ -29,6 +29,9 @@ from musetric_toolkit.transcribe_audio.download_progress import (
 from musetric_toolkit.transcribe_audio.language_detector import (
     detect_language_fulltrack,
 )
+from musetric_toolkit.transcribe_audio.silence_filter import (
+    filter_silent_segments,
+)
 
 
 def configure_warning_filters(log_level: str) -> None:
@@ -285,7 +288,7 @@ def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
         )
         progress_tracker.ensure_minimum(0.5)
 
-    segments = result.get("segments", [])
+    segments = filter_silent_segments(result.get("segments", []), audio)
     detected_language = result.get("language", detected_language)
 
     try:
