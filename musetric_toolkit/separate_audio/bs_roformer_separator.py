@@ -21,12 +21,10 @@ class BSRoformerSeparator:
         model_checkpoint_path: Path,
         model_config_path: Path,
         sample_rate: int,
-        output_format: str,
     ):
         self.model_checkpoint_path = model_checkpoint_path
         self.model_config_path = model_config_path
         self.sample_rate = sample_rate
-        self.output_format = output_format
         self.device = self._get_device()
         self.model = None
         self.config = None
@@ -91,5 +89,4 @@ class BSRoformerSeparator:
                         output_path,
                         normalized_source.astype(np.float32),
                         self.sample_rate,
-                        self.output_format,
                     )

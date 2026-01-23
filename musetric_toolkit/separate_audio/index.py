@@ -41,11 +41,6 @@ def parse_arguments():
         help="Sample rate for separation",
     )
     parser.add_argument(
-        "--output-format",
-        required=True,
-        help="Audio format for separated stems",
-    )
-    parser.add_argument(
         "--log-level",
         default="info",
         choices=["debug", "info", "warn", "error"],
@@ -84,7 +79,6 @@ def main() -> None:
             model_checkpoint_path=envs.model_checkpoint_path,
             model_config_path=envs.model_config_path,
             sample_rate=args.sample_rate,
-            output_format=args.output_format,
         )
         separator.separate_audio(
             source_path=args.source_path,
@@ -96,7 +90,6 @@ def main() -> None:
             model_path=envs.karaoke_mdx_model_path,
             model_data_path=envs.mdx_model_data_path,
             sample_rate=args.sample_rate,
-            output_format=args.output_format,
         )
         lead_back_separator.separate_audio(
             source_path=args.lead_path,

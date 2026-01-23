@@ -74,13 +74,11 @@ class MDXNetSeparator:
         model_path: Path,
         model_data_path: Path,
         sample_rate: int,
-        output_format: str,
     ) -> None:
         self.logger = logging.getLogger(__name__)
         self.model_path = model_path
         self.model_data_path = model_data_path
         self.sample_rate = sample_rate
-        self.output_format = output_format
         self.device = self._get_device()
 
         self.hop_length = 1024
@@ -290,12 +288,10 @@ class MDXNetSeparator:
                 vocal_path,
                 vocal_audio.astype(np.float32),
                 self.sample_rate,
-                self.output_format,
             )
         if instrumental_path:
             write_audio_file(
                 instrumental_path,
                 instrumental_audio.astype(np.float32),
                 self.sample_rate,
-                self.output_format,
             )
