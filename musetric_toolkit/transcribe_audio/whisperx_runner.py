@@ -12,6 +12,8 @@ from pathlib import Path
 import omegaconf.base
 import omegaconf.dictconfig
 import omegaconf.listconfig
+import omegaconf.nodes
+import pyannote.audio.core.model
 import torch
 import whisperx
 from lightning.pytorch import __version__ as pl_version
@@ -32,6 +34,32 @@ from musetric_toolkit.transcribe_audio.language_detector import (
 from musetric_toolkit.transcribe_audio.silence_filter import (
     filter_silent_segments,
 )
+
+_AUDIO_SHORT_WARNING = re.compile(r"Audio is shorter than 30s", re.IGNORECASE)
+
+
+class SuppressMessageFilter(logging.Filter):
+    def __init__(self, patterns: list[re.Pattern[str]]) -> None:
+        super().__init__()
+        self._patterns = patterns
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not any(pattern.search(message) for pattern in self._patterns)
+
+
+def _tune_logger(logger: logging.Logger, target_level: int) -> None:
+    logger.setLevel(target_level)
+    logger.propagate = True
+    if logger.handlers:
+        logger.handlers.clear()
+
+
+def _matches_prefix(logger_name: str, prefixes: tuple[str, ...]) -> bool:
+    return any(
+        logger_name == prefix or logger_name.startswith(f"{prefix}.")
+        for prefix in prefixes
+    )
 
 
 def configure_warning_filters(log_level: str) -> None:
@@ -70,22 +98,23 @@ def configure_third_party_logging(log_level: str) -> None:
         "whisperx",
     )
 
-    def tune_logger(logger: logging.Logger) -> None:
-        logger.setLevel(target_level)
-        logger.propagate = True
-        if logger.handlers:
-            logger.handlers.clear()
-
     for logger_name in prefixes:
-        tune_logger(logging.getLogger(logger_name))
+        _tune_logger(logging.getLogger(logger_name), target_level)
 
     for logger_name, logger in logging.root.manager.loggerDict.items():
-        if not isinstance(logger, logging.Logger):
-            continue
-        for prefix in prefixes:
-            if logger_name == prefix or logger_name.startswith(f"{prefix}."):
-                tune_logger(logger)
-                break
+        if isinstance(logger, logging.Logger) and _matches_prefix(
+            logger_name, prefixes
+        ):
+            _tune_logger(logger, target_level)
+
+    suppress_filter = SuppressMessageFilter([_AUDIO_SHORT_WARNING])
+    for logger_name in ("whisperx", "whisperx.asr"):
+        logger = logging.getLogger(logger_name)
+        has_filter = any(
+            isinstance(existing, SuppressMessageFilter) for existing in logger.filters
+        )
+        if not has_filter:
+            logger.addFilter(suppress_filter)
 
 
 def configure_torch_serialization() -> None:
@@ -95,23 +124,39 @@ def configure_torch_serialization() -> None:
             omegaconf.listconfig.ListConfig,
             omegaconf.dictconfig.DictConfig,
             omegaconf.base.ContainerMetadata,
+            omegaconf.base.Metadata,
+            omegaconf.nodes.AnyNode,
             typing.Any,
+            int,
             list,
             dict,
             tuple,
             set,
             collections.defaultdict,
             collections.OrderedDict,
+            torch.torch_version.TorchVersion,
+            pyannote.audio.core.model.Introspection,
         ]
     )
+
+
+@contextmanager
+def allow_unsafe_torch_load():
     original_torch_load = torch.load
+    original_serialization_load = torch.serialization.load
 
     def torch_load_unrestricted(*args, **kwargs):
-        kwargs["weights_only"] = False
+        if kwargs.get("weights_only") is None:
+            kwargs["weights_only"] = False
         return original_torch_load(*args, **kwargs)
 
     torch.load = torch_load_unrestricted
     torch.serialization.load = torch_load_unrestricted
+    try:
+        yield
+    finally:
+        torch.load = original_torch_load
+        torch.serialization.load = original_serialization_load
 
 
 def maybe_upgrade_whisperx_checkpoint() -> None:
@@ -126,7 +171,11 @@ def maybe_upgrade_whisperx_checkpoint() -> None:
             return
 
         with pl_legacy_patch():
-            checkpoint = torch.load(checkpoint_path, map_location=torch.device("cpu"))
+            checkpoint = torch.load(
+                checkpoint_path,
+                map_location=torch.device("cpu"),
+                weights_only=False,
+            )
 
         ckpt_version = checkpoint.get("pytorch-lightning_version")
         if not ckpt_version:
@@ -258,7 +307,7 @@ def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
-    with intercept_hf_downloads("WhisperX model"):
+    with allow_unsafe_torch_load(), intercept_hf_downloads("WhisperX model"):
         model = whisperx.load_model(
             "large-v3",
             device,
@@ -292,7 +341,10 @@ def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
     detected_language = result.get("language", detected_language)
 
     try:
-        with intercept_hf_downloads("WhisperX alignment model"):
+        with (
+            allow_unsafe_torch_load(),
+            intercept_hf_downloads("WhisperX alignment model"),
+        ):
             align_model, metadata = whisperx.load_align_model(
                 language_code=detected_language,
                 device=device,
