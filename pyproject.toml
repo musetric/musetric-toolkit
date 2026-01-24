@@ -19,8 +19,8 @@ dependencies = [
 ]
 
 [project.scripts]
-musetric-separate = "musetric_toolkit.separate_audio.index:main"
-musetric-transcribe = "musetric_toolkit.transcribe_audio.index:main"
+musetric-separate = "musetric_toolkit.separate_audio.main_cli:main_cli"
+musetric-transcribe = "musetric_toolkit.transcribe_audio.main_cli:main_cli"
 
 [dependency-groups]
 check = [

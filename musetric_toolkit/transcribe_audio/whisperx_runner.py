@@ -4,7 +4,6 @@ import re
 import shutil
 import sys
 import typing
-import warnings
 from contextlib import contextmanager, suppress
 from importlib.util import find_spec
 from pathlib import Path
@@ -34,87 +33,6 @@ from musetric_toolkit.transcribe_audio.language_detector import (
 from musetric_toolkit.transcribe_audio.silence_filter import (
     filter_silent_segments,
 )
-
-_AUDIO_SHORT_WARNING = re.compile(r"Audio is shorter than 30s", re.IGNORECASE)
-
-
-class SuppressMessageFilter(logging.Filter):
-    def __init__(self, patterns: list[re.Pattern[str]]) -> None:
-        super().__init__()
-        self._patterns = patterns
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        message = record.getMessage()
-        return not any(pattern.search(message) for pattern in self._patterns)
-
-
-def _tune_logger(logger: logging.Logger, target_level: int) -> None:
-    logger.setLevel(target_level)
-    logger.propagate = True
-    if logger.handlers:
-        logger.handlers.clear()
-
-
-def _matches_prefix(logger_name: str, prefixes: tuple[str, ...]) -> bool:
-    return any(
-        logger_name == prefix or logger_name.startswith(f"{prefix}.")
-        for prefix in prefixes
-    )
-
-
-def configure_warning_filters(log_level: str) -> None:
-    warnings.filterwarnings("ignore", category=SyntaxWarning)
-    if log_level == "debug":
-        return
-    warnings.filterwarnings(
-        "ignore",
-        message=r".*torchaudio\._backend\.list_audio_backends has been deprecated.*",
-        category=UserWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"Module 'speechbrain\.pretrained' was deprecated.*",
-        category=UserWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r".*TensorFloat-32 \(TF32\) has been disabled.*",
-        category=UserWarning,
-    )
-
-
-def configure_third_party_logging(log_level: str) -> None:
-    if log_level == "debug":
-        return
-    target_level = logging.ERROR if log_level == "error" else logging.WARNING
-    prefixes = (
-        "huggingface_hub",
-        "lightning",
-        "pytorch_lightning",
-        "pyannote",
-        "pyannote.audio",
-        "speechbrain",
-        "torchaudio",
-        "whisperx",
-    )
-
-    for logger_name in prefixes:
-        _tune_logger(logging.getLogger(logger_name), target_level)
-
-    for logger_name, logger in logging.root.manager.loggerDict.items():
-        if isinstance(logger, logging.Logger) and _matches_prefix(
-            logger_name, prefixes
-        ):
-            _tune_logger(logger, target_level)
-
-    suppress_filter = SuppressMessageFilter([_AUDIO_SHORT_WARNING])
-    for logger_name in ("whisperx", "whisperx.asr"):
-        logger = logging.getLogger(logger_name)
-        has_filter = any(
-            isinstance(existing, SuppressMessageFilter) for existing in logger.filters
-        )
-        if not has_filter:
-            logger.addFilter(suppress_filter)
 
 
 def configure_torch_serialization() -> None:
@@ -298,8 +216,6 @@ def intercept_progress_lines(tracker: ProgressTracker):
 
 
 def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
-    configure_warning_filters(log_level)
-    configure_third_party_logging(log_level)
     configure_torch_serialization()
     maybe_upgrade_whisperx_checkpoint()
     print_acceleration_info()
