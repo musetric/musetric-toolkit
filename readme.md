@@ -10,7 +10,7 @@ uv tool install --python 3.13.2 \
   --default-index https://pypi.org/simple \
   --index https://download.pytorch.org/whl/cpu \  # --index https://download.pytorch.org/whl/cu129 \
   --index-strategy unsafe-best-match \
-  https://github.com/popelenkow/musetric-toolkit/releases/download/v0.0.12/musetric_toolkit-0.0.12-py3-none-any.whl
+  https://github.com/popelenkow/musetric-toolkit/releases/download/v0.0.13/musetric_toolkit-0.0.13-py3-none-any.whl
 ```
 
 For local development, install the CLI in editable mode.
@@ -30,6 +30,7 @@ musetric-separate \
   --backing-path /path/to/output-backing.flac \  # output path for the backing vocal track
   --instrumental-path /path/to/output-instrumental.flac \  # output path for the instrumental track
   --sample-rate 44100 \  # target sample rate (e.g. 44100)
+  --models-path /path/to/models \  # base directory for downloaded models
   --log-level info  # debug|info|warn|error (default: info)
 ```
 
@@ -37,6 +38,8 @@ musetric-separate \
 musetric-transcribe \
   --audio-path /path/to/vocals.wav \  # input vocal audio file
   --result-path /path/to/transcription.json \  # output JSON file
+  --models-path /path/to/models \  # base directory for downloaded models
+  --log-level info  # debug|info|warn|error (default: info)
 ```
 
 ## Dependencies
