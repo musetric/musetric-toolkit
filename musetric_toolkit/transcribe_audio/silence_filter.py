@@ -30,4 +30,4 @@ def filter_silent_segments(
         for segment, rms in zip(segments, rms_values, strict=False)
         if rms >= threshold
     ]
-    return filtered or segments
+    return filtered

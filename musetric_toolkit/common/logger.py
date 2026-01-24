@@ -17,6 +17,8 @@ class JSONFormatter(logging.Formatter):
     def format(self, record):
         mapped_level = self.level_map.get(record.levelname, "info")
         log_entry = {"level": mapped_level, "message": record.getMessage()}
+        if record.exc_info:
+            log_entry["traceback"] = self.formatException(record.exc_info)
         return json.dumps(log_entry)
 
 
