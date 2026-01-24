@@ -42,7 +42,7 @@ def main() -> None:
         output_path = Path(args.result_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w", encoding="utf-8") as result_file:
-            json.dump(payload_segments, result_file)
+            json.dump(payload_segments, result_file, ensure_ascii=False)
     except Exception as error:
         logging.error("Audio transcription failed: %s", error)
         sys.exit(1)
