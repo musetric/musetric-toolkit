@@ -16,19 +16,31 @@ def build_payload_words(words: list) -> list:
     return payload_words
 
 
+def build_fallback_word(text: str, start: float, end: float) -> dict:
+    return {
+        "start": start,
+        "end": end,
+        "text": text,
+    }
+
+
 def build_payload_segments(segments: list) -> list:
     payload_segments = []
     for segment in segments:
         text = (segment.get("text") or "").strip()
         if not text:
             continue
+        start = float(segment["start"])
+        end = float(segment["end"])
         payload_words = build_payload_words(segment.get("words", []))
+        if not payload_words:
+            payload_words = [build_fallback_word(text, start, end)]
         payload_segments.append(
             {
-                "start": float(segment["start"]),
-                "end": float(segment["end"]),
+                "start": start,
+                "end": end,
                 "text": text,
-                **({"words": payload_words} if payload_words else {}),
+                "words": payload_words,
             }
         )
     return payload_segments
