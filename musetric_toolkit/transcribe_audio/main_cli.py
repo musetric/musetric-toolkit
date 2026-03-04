@@ -21,6 +21,10 @@ def build_stream_suppression_patterns(
 
 
 _AUDIO_SHORT_WARNING = re.compile(r"Audio is shorter than 30s", re.IGNORECASE)
+_ALIGNMENT_BACKTRACK_WARNING = re.compile(
+    r"Failed to align segment .*backtrack failed, resorting to original",
+    re.IGNORECASE,
+)
 
 
 class SuppressMessageFilter(logging.Filter):
@@ -36,8 +40,10 @@ class SuppressMessageFilter(logging.Filter):
 def add_whisperx_filters(log_level: str) -> None:
     if log_level == "debug":
         return
-    suppress_filter = SuppressMessageFilter([_AUDIO_SHORT_WARNING])
-    for logger_name in ("whisperx", "whisperx.asr"):
+    suppress_filter = SuppressMessageFilter(
+        [_AUDIO_SHORT_WARNING, _ALIGNMENT_BACKTRACK_WARNING]
+    )
+    for logger_name in ("whisperx", "whisperx.asr", "whisperx.alignment"):
         logger = logging.getLogger(logger_name)
         has_filter = any(
             isinstance(existing, SuppressMessageFilter) for existing in logger.filters
