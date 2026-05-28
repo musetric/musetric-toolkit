@@ -16,11 +16,14 @@ dependencies = [
     "platformdirs==4.5.0",
     "whisperx==3.7.4",
     "hf-xet==1.2.0",
+    "beat-this==1.1.0",
+    "soundfile==0.13.1",
 ]
 
 [project.scripts]
 musetric-separate = "musetric_toolkit.separate_audio.main_cli:main_cli"
 musetric-transcribe = "musetric_toolkit.transcribe_audio.main_cli:main_cli"
+musetric-rhythm = "musetric_toolkit.rhythm_audio.main_cli:main_cli"
 
 [dependency-groups]
 check = [
