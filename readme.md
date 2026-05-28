@@ -10,7 +10,8 @@ uv tool install --python 3.13.2 \
   --default-index https://pypi.org/simple \
   --index https://download.pytorch.org/whl/cpu \  # --index https://download.pytorch.org/whl/cu129 \
   --index-strategy unsafe-best-match \
-  https://github.com/popelenkow/musetric-toolkit/releases/download/v0.0.14/musetric_toolkit-0.0.14-py3-none-any.whl
+  --overrides https://raw.githubusercontent.com/popelenkow/musetric-toolkit/main/overrides.txt \
+  https://github.com/popelenkow/musetric-toolkit/releases/download/v0.0.16/musetric_toolkit-0.0.16-py3-none-any.whl
 ```
 
 For local development, install the CLI in editable mode.
@@ -18,8 +19,11 @@ For local development, install the CLI in editable mode.
 uv tool install --python 3.13.2 --editable . \
   --default-index https://pypi.org/simple \
   --index https://download.pytorch.org/whl/cpu \  # --index https://download.pytorch.org/whl/cu129 \
-  --index-strategy unsafe-best-match
+  --index-strategy unsafe-best-match \
+  --overrides overrides.txt
 ```
+
+The `overrides.txt` file pins `torch` and `torchaudio` to 2.8.0, overriding `skey`'s overly conservative `<2.8.0` upper bound. `uv tool install` does not read `[tool.uv]` from the target project, so the CLI flag is required.
 
 ## CLI Usage
 
