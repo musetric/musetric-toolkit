@@ -18,12 +18,24 @@ dependencies = [
     "hf-xet==1.2.0",
     "beat-this==1.1.0",
     "soundfile==0.13.1",
+    "skey==0.1.0",
+    "nnAudio==0.3.3",
 ]
 
 [project.scripts]
 musetric-separate = "musetric_toolkit.separate_audio.main_cli:main_cli"
 musetric-transcribe = "musetric_toolkit.transcribe_audio.main_cli:main_cli"
 musetric-rhythm = "musetric_toolkit.rhythm_audio.main_cli:main_cli"
+musetric-key = "musetric_toolkit.key_audio.main_cli:main_cli"
+
+[tool.uv]
+override-dependencies = [
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+]
+
+[tool.uv.sources]
+skey = { git = "https://github.com/deezer/skey.git" }
 
 [dependency-groups]
 check = [

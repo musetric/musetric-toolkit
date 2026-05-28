@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = "==3.13.2"
 
+[manifest]
+overrides = [
+    { name = "torch", specifier = "==2.8.0" },
+    { name = "torchaudio", specifier = "==2.8.0" },
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
@@ -802,12 +808,14 @@ dependencies = [
     { name = "beat-this" },
     { name = "einops" },
     { name = "hf-xet" },
+    { name = "nnaudio" },
     { name = "numba" },
     { name = "numpy" },
     { name = "onnxruntime" },
     { name = "platformdirs" },
     { name = "pyyaml" },
     { name = "rotary-embedding-torch" },
+    { name = "skey" },
     { name = "soundfile" },
     { name = "torch" },
     { name = "torchaudio" },
@@ -826,12 +834,14 @@ requires-dist = [
     { name = "beat-this", specifier = "==1.1.0" },
     { name = "einops", specifier = "==0.8.1" },
     { name = "hf-xet", specifier = "==1.2.0" },
+    { name = "nnaudio", specifier = "==0.3.3" },
     { name = "numba", specifier = "==0.62.1" },
     { name = "numpy", specifier = "==2.2.6" },
     { name = "onnxruntime", specifier = "==1.23.2" },
     { name = "platformdirs", specifier = "==4.5.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "rotary-embedding-torch", specifier = "==0.8.9" },
+    { name = "skey", git = "https://github.com/deezer/skey.git" },
     { name = "soundfile", specifier = "==0.13.1" },
     { name = "torch", specifier = "==2.8.0" },
     { name = "torchaudio", specifier = "==2.8.0" },
@@ -876,6 +886,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f9/76/3a5e4312c19a028770f86fd7c058cf9f4ec4321c6cf7526bab998a5b683c/nltk-3.9.2.tar.gz", hash = "sha256:0f409e9b069ca4177c1903c3e843eef90c7e92992fa4931ae607da6de49e1419", size = 2887629, upload-time = "2025-10-01T07:19:23.764Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/90/81ac364ef94209c100e12579629dc92bf7a709a84af32f8c551b02c07e94/nltk-3.9.2-py3-none-any.whl", hash = "sha256:1e209d2b3009110635ed9709a67a1a3e33a10f799490fa71cf4bec218c11c88a", size = 1513404, upload-time = "2025-10-01T07:19:21.648Z" },
+]
+
+[[package]]
+name = "nnaudio"
+version = "0.3.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/95/0d/ed73a11588aa8f21c166676d01cc84ad1ce2be6059c2461c793da434ed33/nnAudio-0.3.3.tar.gz", hash = "sha256:076697199811314d41714d563d9d72ed0808e7c2da2dacf11dd4e3069d4ec054", size = 38882, upload-time = "2024-02-13T05:58:32.414Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/8f/799c8cd59a710c58a5e4b7bbcc9a631025cd794b3a316fa9d30e297d5050/nnAudio-0.3.3-py3-none-any.whl", hash = "sha256:4ea1fdc4638b9cf53c9b58ca11a9d474105a2b58da8bb5f6e75416ba5ada5e46", size = 43604, upload-time = "2024-02-13T05:58:29.788Z" },
 ]
 
 [[package]]
@@ -1740,6 +1764,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
+]
+
+[[package]]
+name = "skey"
+version = "0.1.0"
+source = { git = "https://github.com/deezer/skey.git#918b83d273568d5041569bb8068843d19a335726" }
+dependencies = [
+    { name = "einops" },
+    { name = "nnaudio" },
+    { name = "numpy" },
+    { name = "soundfile" },
+    { name = "torch" },
+    { name = "torchaudio" },
+    { name = "tqdm" },
 ]
 
 [[package]]
