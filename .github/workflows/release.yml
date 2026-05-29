@@ -21,10 +21,24 @@ jobs:
           python-version: "3.13.2"
       - run: pip install build
       - run: python -m build --wheel
+      - name: Build skey wheel from git source
+        run: |
+          git clone --depth 1 https://github.com/deezer/skey.git /tmp/skey
+          pip wheel /tmp/skey --no-deps -w dist
+      - name: Generate versioned overrides.txt
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          SKEY_WHEEL=$(basename "$(ls dist/skey-*.whl)")
+          cat > dist/overrides.txt <<EOF
+          torch==2.8.0
+          torchaudio==2.8.0
+          skey @ https://github.com/popelenkow/musetric-toolkit/releases/download/v${VERSION}/${SKEY_WHEEL}
+          EOF
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel
-          path: dist/*.whl
+          name: release-assets
+          path: dist/*
 
   release:
     needs: build
@@ -32,10 +46,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: wheel
+          name: release-assets
           path: ./dist
       - uses: softprops/action-gh-release@v1
         with:
-          files: ./dist/*.whl
+          files: ./dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
