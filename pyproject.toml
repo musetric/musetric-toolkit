@@ -20,6 +20,7 @@ dependencies = [
     "soundfile==0.13.1",
     "skey==0.1.0",
     "nnAudio==0.3.3",
+    "librosa==0.11.0",
 ]
 
 [project.scripts]
@@ -27,6 +28,7 @@ musetric-separate = "musetric_toolkit.separate_audio.main_cli:main_cli"
 musetric-transcribe = "musetric_toolkit.transcribe_audio.main_cli:main_cli"
 musetric-rhythm = "musetric_toolkit.rhythm_audio.main_cli:main_cli"
 musetric-key = "musetric_toolkit.key_audio.main_cli:main_cli"
+musetric-chords = "musetric_toolkit.chords_audio.main_cli:main_cli"
 
 [tool.uv]
 override-dependencies = [
@@ -52,14 +54,14 @@ build-backend = "hatchling.build"
 packages = ["musetric_toolkit"]
 
 [tool.black]
-exclude = ".venv"
+exclude = "(.venv|musetric_toolkit/chords_audio/chordmini)"
 
 [tool.isort]
 profile = "black"
-skip = [".venv"]
+skip = [".venv", "musetric_toolkit/chords_audio/chordmini"]
 
 [tool.ruff]
-exclude = [".venv"]
+exclude = [".venv", "musetric_toolkit/chords_audio/chordmini"]
 line-length = 88
 
 [tool.ruff.lint]

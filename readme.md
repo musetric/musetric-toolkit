@@ -11,7 +11,7 @@ uv tool install --python 3.13.2 \
   --index https://download.pytorch.org/whl/cpu \  # --index https://download.pytorch.org/whl/cu129 \
   --index-strategy unsafe-best-match \
   --overrides https://raw.githubusercontent.com/popelenkow/musetric-toolkit/main/overrides.txt \
-  https://github.com/popelenkow/musetric-toolkit/releases/download/v0.0.16/musetric_toolkit-0.0.16-py3-none-any.whl
+  https://github.com/popelenkow/musetric-toolkit/releases/download/v0.0.18/musetric_toolkit-0.0.18-py3-none-any.whl
 ```
 
 For local development, install the CLI in editable mode.
