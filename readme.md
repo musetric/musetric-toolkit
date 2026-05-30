@@ -4,24 +4,26 @@ Standalone CLI tool extracted from [Musetric](https://github.com/popelenkow/muse
 
 ## Installation
 
-Install the package directly from the latest GitHub release.
+Install the package directly from the latest GitHub release. Pick the `cuda` or `cpu` extra to match the PyTorch index — it selects the matching `onnxruntime-gpu` / `onnxruntime` distribution.
 ```bash
 uv tool install --python 3.13.2 \
   --default-index https://pypi.org/simple \
-  --index https://download.pytorch.org/whl/cpu \  # --index https://download.pytorch.org/whl/cu129 \
+  --index https://download.pytorch.org/whl/cu129 \  # /whl/cpu
   --index-strategy unsafe-best-match \
   --overrides https://raw.githubusercontent.com/popelenkow/musetric-toolkit/main/overrides.txt \
-  https://github.com/popelenkow/musetric-toolkit/releases/download/v0.0.18/musetric_toolkit-0.0.18-py3-none-any.whl
+  "musetric-toolkit[cuda] @ https://github.com/popelenkow/musetric-toolkit/releases/download/v0.0.19/musetric_toolkit-0.0.19-py3-none-any.whl"  # [cpu]
 ```
 
 For local development, install the CLI in editable mode.
 ```bash
-uv tool install --python 3.13.2 --editable . \
+uv tool install --python 3.13.2 --editable ".[cuda]" \  ".[cpu]"
   --default-index https://pypi.org/simple \
-  --index https://download.pytorch.org/whl/cpu \  # --index https://download.pytorch.org/whl/cu129 \
+  --index https://download.pytorch.org/whl/cu129 \  # /whl/cpu
   --index-strategy unsafe-best-match \
   --overrides overrides.txt
 ```
+
+The `cpu` / `cuda` extras select the `onnxruntime` (CPU) vs `onnxruntime-gpu` (CUDA) package — they share the `onnxruntime` import name but are distinct PyPI packages, so the `--index` flag alone cannot switch them the way it switches `torch`.
 
 The `overrides.txt` file pins `torch` and `torchaudio` to 2.8.0, overriding `skey`'s overly conservative `<2.8.0` upper bound. `uv tool install` does not read `[tool.uv]` from the target project, so the CLI flag is required.
 
