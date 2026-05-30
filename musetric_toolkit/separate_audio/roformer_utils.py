@@ -46,10 +46,16 @@ class AudioProcessor:
                     progress = step_idx / total_steps
                     send_message({"type": "progress", "progress": progress / 2})
 
-                if i + chunk_size > mix_tensor.shape[1]:
-                    part = mix_tensor[:, -chunk_size:]
-                    start_pos = result.shape[-1] - chunk_size
-                    length = chunk_size
+                total_len = mix_tensor.shape[1]
+                if i + chunk_size > total_len:
+                    if total_len >= chunk_size:
+                        part = mix_tensor[:, -chunk_size:]
+                        start_pos = total_len - chunk_size
+                        length = chunk_size
+                    else:
+                        part = mix_tensor
+                        start_pos = 0
+                        length = total_len
                 else:
                     part = mix_tensor[:, i : i + chunk_size]
                     start_pos = i
@@ -65,15 +71,19 @@ class AudioProcessor:
                 counter[..., start_pos : start_pos + length] += window_slice
 
         outputs = (result / counter.clamp(min=1e-10)).cpu().numpy()
-        sources = dict(zip(self.config.training.instruments, outputs, strict=False))
+        instruments = list(self.config.training.instruments)
+        sources = dict(zip(instruments, outputs, strict=False))
 
         primary_stem = self.config.training.target_instrument
-        secondary_stem = "Instrumental" if primary_stem == "Vocals" else "Vocals"
+        secondary_stem = next(
+            (name for name in instruments if name != primary_stem), None
+        )
 
         if primary_stem in sources:
             sources[primary_stem] = utils.match_array_shapes(
                 sources[primary_stem], original_mix
             )
-            sources[secondary_stem] = original_mix - sources[primary_stem]
+            if secondary_stem is not None:
+                sources[secondary_stem] = original_mix - sources[primary_stem]
 
         return sources

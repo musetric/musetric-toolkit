@@ -2,8 +2,10 @@ from pathlib import Path
 
 from musetric_toolkit.common import envs
 from musetric_toolkit.common.model_files import ensure_model_file, ensure_model_files
-from musetric_toolkit.separate_audio.bs_roformer_separator import BSRoformerSeparator
 from musetric_toolkit.separate_audio.mdx_net_separator import MDXNetSeparator
+from musetric_toolkit.separate_audio.mel_band_roformer_separator import (
+    MelBandRoformerSeparator,
+)
 from musetric_toolkit.separate_audio.system_info import (
     ensure_ffmpeg,
     print_acceleration_info,
@@ -36,7 +38,7 @@ def main(args) -> None:
     print_acceleration_info()
     setup_torch_optimization()
 
-    separator = BSRoformerSeparator(
+    separator = MelBandRoformerSeparator(
         model_checkpoint_path=model_checkpoint_path,
         model_config_path=model_config_path,
         sample_rate=args.sample_rate,

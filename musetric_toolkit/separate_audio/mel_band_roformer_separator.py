@@ -6,16 +6,16 @@ import torch
 import yaml
 
 from musetric_toolkit.separate_audio import utils
-from musetric_toolkit.separate_audio.bs_roformer_utils import (
+from musetric_toolkit.separate_audio.ffmpeg.read import read_audio_file
+from musetric_toolkit.separate_audio.ffmpeg.write import write_audio_file
+from musetric_toolkit.separate_audio.roformer.mel_band_roformer import MelBandRoformer
+from musetric_toolkit.separate_audio.roformer_utils import (
     AudioProcessor,
     dict_to_namespace,
 )
-from musetric_toolkit.separate_audio.ffmpeg.read import read_audio_file
-from musetric_toolkit.separate_audio.ffmpeg.write import write_audio_file
-from musetric_toolkit.separate_audio.roformer.bs_roformer import BSRoformer
 
 
-class BSRoformerSeparator:
+class MelBandRoformerSeparator:
     def __init__(
         self,
         model_checkpoint_path: Path,
@@ -50,7 +50,7 @@ class BSRoformerSeparator:
             return
 
         self.config = self._load_config()
-        model = BSRoformer(**vars(self.config.model))
+        model = MelBandRoformer(**vars(self.config.model))
         checkpoint = torch.load(
             self.model_checkpoint_path, map_location="cpu", weights_only=True
         )
@@ -77,14 +77,16 @@ class BSRoformerSeparator:
 
             separated_sources = self._demix(mixture)
 
+            target_stem = self.config.training.target_instrument
+
             for stem_name, source_audio in separated_sources.items():
                 normalized_source = utils.normalize(
                     source_audio, max_peak=0.9, min_peak=0.0
                 ).T
-                output_path = vocal_path if "Vocal" in stem_name else instrumental_path
-                if output_path and (
-                    "Vocal" in stem_name or "Instrumental" in stem_name
-                ):
+                output_path = (
+                    vocal_path if stem_name == target_stem else instrumental_path
+                )
+                if output_path:
                     write_audio_file(
                         output_path,
                         normalized_source.astype(np.float32),
