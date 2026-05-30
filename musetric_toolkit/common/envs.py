@@ -1,11 +1,11 @@
 from pathlib import Path
 
-model_checkpoint_url = "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/model_bs_roformer_ep_368_sdr_12.9628.ckpt"
-model_config_url = "https://raw.githubusercontent.com/TRvlvr/application_data/main/mdx_model_data/mdx_c_configs/model_bs_roformer_ep_368_sdr_12.9628.yaml"
+model_checkpoint_url = "https://huggingface.co/SYH99999/MelBandRoformerBigSYHFTV1Fast/resolve/main/MelBandRoformerBigSYHFTV1.ckpt"
+model_config_url = "https://huggingface.co/SYH99999/MelBandRoformerBigSYHFTV1Fast/resolve/main/config.yaml"
 
-model_bs_roformer_dir = "model_bs_roformer_ep_368_sdr_12.9628"
-model_checkpoint_rel_path = Path(model_bs_roformer_dir) / "model.ckpt"
-model_config_rel_path = Path(model_bs_roformer_dir) / "config.yaml"
+model_mel_band_roformer_dir = "mel_band_roformer_big_syhft_v1"
+model_checkpoint_rel_path = Path(model_mel_band_roformer_dir) / "model.ckpt"
+model_config_rel_path = Path(model_mel_band_roformer_dir) / "config.yaml"
 
 karaoke_mdx_model_url = (
     "https://huggingface.co/AI4future/RVC/resolve/main/UVR_MDXNET_KARA_2.onnx"

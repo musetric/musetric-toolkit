@@ -16,18 +16,18 @@ def run_commands(commands):
 
 def check():
     commands = [
-        "uv run ruff check . --no-cache",
-        "uv run isort . --check-only",
-        "uv run black . --check",
+        "uv run --group check ruff check . --no-cache",
+        "uv run --group check isort . --check-only",
+        "uv run --group check black . --check",
     ]
     run_commands(commands)
 
 
 def fix():
     commands = [
-        ["ruff", "check", ".", "--fix", "--no-cache"],
-        ["isort", "."],
-        ["black", "."],
+        "uv run --group check ruff check . --fix --no-cache",
+        "uv run --group check isort .",
+        "uv run --group check black .",
     ]
     run_commands(commands)
 

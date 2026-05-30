@@ -19,7 +19,6 @@ def log_selected_backend(q, k, v, backends):
         backend_names = [b.name for b in backends]
         logging.debug(f"Available SDPA backends for attention: {backend_names}")
 
-        # Try to determine which backend will be used by testing each one
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             for backend in backends:
