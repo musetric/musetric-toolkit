@@ -7,7 +7,7 @@ import logging
 import warnings
 
 import torch
-from torch import einsum, nn
+from torch import nn
 from torch.nn import functional
 from torch.nn.attention import SDPBackend
 
@@ -65,9 +65,13 @@ class Attend(nn.Module):
             return self.flash_attn(q, k, v)
 
         if not _backends_logged["value"]:
-            logging.debug("Using manual attention computation (einsum-based)")
+            logging.debug("Using manual attention computation (matmul-based)")
             _backends_logged["value"] = True
+        # MatMul (not einsum): MatMul is supported on every onnxruntime EP
+        # (WebGPU / DirectML / CUDA / CoreML / TensorRT) and is the form their
+        # attention fusions match; einsum coverage on DirectML/CoreML is spotty.
+        # sim = q @ kᵀ ; out = attn @ v  (math-identical to the einsum path).
         scale = q.shape[-1] ** -0.5
-        sim = einsum("b h i d, b h j d -> b h i j", q, k) * scale
+        sim = torch.matmul(q, k.transpose(-1, -2)) * scale
         attn = self.attn_dropout(sim.softmax(dim=-1))
-        return einsum("b h i j, b h j d -> b h i d", attn, v)
+        return torch.matmul(attn, v)

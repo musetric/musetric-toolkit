@@ -326,7 +326,10 @@ class MelBandRoformer(Module):
         )
 
         freqs = torch.stft(
-            torch.randn(1, 4096), **self.stft_kwargs, return_complex=True
+            torch.randn(1, 4096),
+            **self.stft_kwargs,
+            window=torch.ones(stft_win_length),  # shape-only probe; window irrelevant
+            return_complex=True,
         ).shape[1]
 
         mel_filter_bank_numpy = filters.mel(
@@ -389,6 +392,99 @@ class MelBandRoformer(Module):
 
         self.match_input_audio_length = match_input_audio_length
 
+    def net_forward(self, stft_repr):
+        # Pure NN core (ONNX-export boundary): real STFT representation -> real
+        # masks. No torch.stft/istft/view_as_complex inside — those stay host-side.
+        # stft_repr: (b, f*s, t, c=2) real ; returns masks (b, n, f, t, c=2) real.
+        batch = stft_repr.shape[0]
+        device = stft_repr.device
+        freq_indices = self.freq_indices.to(device)
+
+        batch_arange = torch.arange(batch, device=device)[..., None]
+        x = stft_repr[batch_arange, freq_indices]
+        x = rearrange(x, "b f t c -> b t (f c)")
+
+        x = self.band_split(x)
+
+        for time_transformer, freq_transformer in self.layers:
+            x = rearrange(x, "b t f d -> b f t d")
+            x, ps = pack([x], "* t d")
+
+            x = time_transformer(x)
+
+            (x,) = unpack(x, ps, "* t d")
+            x = rearrange(x, "b f t d -> b t f d")
+            x, ps = pack([x], "* f d")
+
+            x = freq_transformer(x)
+
+            (x,) = unpack(x, ps, "* f d")
+
+        masks = torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
+        masks = rearrange(masks, "b n t (f c) -> b n f t c", c=2)
+        return masks
+
+    def encode_stft(self, raw_audio):
+        # Host-side front-end (stays OUTSIDE the ONNX graph): (b, s, t) audio ->
+        # real STFT repr (b, f*s, frames, 2). Mirrors the STFT block of forward.
+        raw_audio, ps = pack_one(raw_audio, "* t")
+        stft_window = self.stft_window_fn().to(raw_audio.device)
+        stft_repr = torch.stft(
+            raw_audio, **self.stft_kwargs, window=stft_window, return_complex=True
+        )
+        stft_repr = torch.view_as_real(stft_repr)
+        stft_repr = unpack_one(stft_repr, ps, "* f t c")
+        stft_repr = rearrange(stft_repr, "b s f t c -> b (f s) t c")
+        return stft_repr
+
+    def decode_istft(self, stft_repr, masks, length=None):
+        # Host-side back-end (stays OUTSIDE the ONNX graph): real STFT repr + real
+        # masks -> reconstructed audio (b, s, t). Mirrors the mask-apply + iSTFT
+        # tail of forward (non-mps path).
+        device = stft_repr.device
+        batch = stft_repr.shape[0]
+        channels = self.audio_channels
+        stft_window = self.stft_window_fn().to(device)
+
+        stft_repr = rearrange(stft_repr, "b f t c -> b 1 f t c")
+        stft_repr = torch.view_as_complex(stft_repr)
+        masks = torch.view_as_complex(masks)
+        masks = masks.type(stft_repr.dtype)
+
+        scatter_indices = repeat(
+            self.freq_indices.to(device),
+            "f -> b n f t",
+            b=batch,
+            n=self.num_stems,
+            t=stft_repr.shape[-1],
+        )
+        stft_repr_expanded_stems = repeat(
+            stft_repr, "b 1 ... -> b n ...", n=self.num_stems
+        )
+        masks_summed = torch.zeros_like(stft_repr_expanded_stems).scatter_add_(
+            2, scatter_indices, masks
+        )
+
+        denom = repeat(self.num_bands_per_freq.to(device), "f -> (f r) 1", r=channels)
+        masks_averaged = masks_summed / denom.clamp(min=1e-8)
+
+        stft_repr = stft_repr * masks_averaged
+        stft_repr = rearrange(stft_repr, "b n (f s) t -> (b n s) f t", s=channels)
+
+        recon_audio = torch.istft(
+            stft_repr,
+            **self.stft_kwargs,
+            window=stft_window,
+            return_complex=False,
+            length=length,
+        )
+        recon_audio = rearrange(
+            recon_audio, "(b n s) t -> b n s t", b=batch, s=channels, n=self.num_stems
+        )
+        if self.num_stems == 1:
+            recon_audio = rearrange(recon_audio, "b 1 s t -> b s t")
+        return recon_audio
+
     def forward(self, raw_audio, target=None, return_loss_breakdown=False):
         """
         einops
@@ -433,34 +529,7 @@ class MelBandRoformer(Module):
         stft_repr = unpack_one(stft_repr, batch_audio_channel_packed_shape, "* f t c")
         stft_repr = rearrange(stft_repr, "b s f t c -> b (f s) t c")
 
-        batch_arange = torch.arange(batch, device=device)[..., None]
-
-        x = (
-            stft_repr[batch_arange, self.freq_indices.cpu()]
-            if x_is_mps
-            else stft_repr[batch_arange, self.freq_indices]
-        )
-
-        x = rearrange(x, "b f t c -> b t (f c)")
-
-        x = self.band_split(x)
-
-        for time_transformer, freq_transformer in self.layers:
-            x = rearrange(x, "b t f d -> b f t d")
-            x, ps = pack([x], "* t d")
-
-            x = time_transformer(x)
-
-            (x,) = unpack(x, ps, "* t d")
-            x = rearrange(x, "b f t d -> b t f d")
-            x, ps = pack([x], "* f d")
-
-            x = freq_transformer(x)
-
-            (x,) = unpack(x, ps, "* f d")
-
-        masks = torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
-        masks = rearrange(masks, "b n t (f c) -> b n f t c", c=2)
+        masks = self.net_forward(stft_repr)
 
         if x_is_mps:
             masks = masks.cpu()
