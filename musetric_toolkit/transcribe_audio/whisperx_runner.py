@@ -58,6 +58,35 @@ def configure_torch_serialization() -> None:
     )
 
 
+def patch_speechbrain_lazy_imports() -> None:
+    try:
+        from speechbrain.utils import importutils  # noqa: PLC0415
+    except Exception as error:
+        logging.debug("SpeechBrain lazy import patch skipped: %s", error)
+        return
+
+    if getattr(importutils.LazyModule.ensure_module, "_musetric_patched", False):
+        return
+
+    original_ensure_module = importutils.LazyModule.ensure_module
+
+    def ensure_module(self, stacklevel: int):
+        try:
+            importer_frame = importutils.inspect.getframeinfo(
+                importutils.sys._getframe(stacklevel + 1)
+            )
+        except AttributeError:
+            return original_ensure_module(self, stacklevel)
+
+        if Path(importer_frame.filename).name == "inspect.py":
+            raise AttributeError()
+
+        return original_ensure_module(self, stacklevel)
+
+    ensure_module._musetric_patched = True
+    importutils.LazyModule.ensure_module = ensure_module
+
+
 @contextmanager
 def allow_unsafe_torch_load():
     original_torch_load = torch.load
@@ -216,6 +245,7 @@ def intercept_progress_lines(tracker: ProgressTracker):
 
 
 def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
+    patch_speechbrain_lazy_imports()
     configure_torch_serialization()
     maybe_upgrade_whisperx_checkpoint()
     print_acceleration_info()
