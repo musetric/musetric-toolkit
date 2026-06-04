@@ -225,9 +225,11 @@ def main() -> None:
     p.add_argument(
         "--core-only",
         action="store_true",
-        help="export just net_forward (stft_repr -> masks), NOT the full STFT/iSTFT "
+        help="export the web core (stft_repr -> per-bin masks), NOT the full "
+        "STFT/iSTFT "
         "graph. Produces the web-backend core (syhft_core_fused_fp16_webgpu.onnx) "
-        "that onnxruntime-web runs with @musetric/fft host-side DSP.",
+        "that onnxruntime-web runs with @musetric/fft host-side DSP. The model "
+        "bakes the mel-band gather/average tables into the graph.",
     )
     args = p.parse_args()
 
@@ -262,17 +264,50 @@ def main() -> None:
 
 
 class Core(nn.Module):
-    """net_forward boundary: stft_repr [1,2050,T,2] -> masks [1,1,3958,T,2]."""
+    """Core boundary: stft_repr [1,2050,T,2] -> per-bin masks [1,2050,T,2].
+
+    net_forward emits per-band masks [1,1,3958,T,2]; this tail gathers them onto
+    the 2050 packed freq bins (fan-in <=2 per bin) and divides by the per-bin band
+    count, so the published core needs no host-side band tables. It is a Gather +
+    Add + Div formulation (all WebGPU-resident) rather than scatter_add, whose
+    ScatterElements has no onnxruntime-web WebGPU kernel and would fall back to CPU.
+    """
 
     def __init__(self, model: MelBandRoformer):
         super().__init__()
         self.model = model
+        freq_indices = model.freq_indices.long()
+        pair0 = torch.zeros(PACKED, dtype=torch.long)
+        pair1 = torch.zeros(PACKED, dtype=torch.long)
+        valid0 = torch.zeros(PACKED)
+        valid1 = torch.zeros(PACKED)
+        seen = torch.zeros(PACKED, dtype=torch.long)
+        for band in range(freq_indices.shape[0]):
+            b = int(freq_indices[band])
+            if seen[b] == 0:
+                pair0[b], valid0[b] = band, 1.0
+            elif seen[b] == 1:
+                pair1[b], valid1[b] = band, 1.0
+            else:
+                raise RuntimeError(f"mask fan-in > 2 at bin {b}")
+            seen[b] += 1
+        denom = model.num_bands_per_freq.float().repeat_interleave(2).clamp(min=1e-8)
+        self.register_buffer("pair0", pair0)
+        self.register_buffer("pair1", pair1)
+        self.register_buffer("valid0", valid0.view(1, PACKED, 1, 1))
+        self.register_buffer("valid1", valid1.view(1, PACKED, 1, 1))
+        self.register_buffer("denom", denom.view(1, PACKED, 1, 1))
 
     def forward(self, stft_repr: torch.Tensor) -> torch.Tensor:
-        return self.model.net_forward(stft_repr)
+        masks = self.model.net_forward(stft_repr)
+        masks = masks.reshape(1, -1, masks.shape[-2], 2)  # [1,3958,T,2]
+        g0 = masks.index_select(1, self.pair0)  # [1,2050,T,2]
+        g1 = masks.index_select(1, self.pair1)  # [1,2050,T,2]
+        summed = g0 * self.valid0 + g1 * self.valid1
+        return (summed / self.denom).float()
 
 
-def export(  # noqa: C901, PLR0915
+def export(  # noqa: C901, PLR0912, PLR0915
     full: nn.Module,
     output: Path,
     fp32: bool = False,
@@ -388,6 +423,8 @@ def export(  # noqa: C901, PLR0915
         del proto
         gc.collect()
 
+        if core_only:
+            ensure_float32_outputs(model16)
         save_fp16(model16, output)
         reloaded = onnx.load(str(output))
         nfix = sanitize_fp16_initializers(reloaded)
@@ -715,6 +752,42 @@ def sanitize_fp16_initializers(model) -> int:
             a = np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float16)
             t.CopyFrom(numpy_helper.from_array(a, t.name))
     return fixed
+
+
+def ensure_float32_outputs(model) -> int:
+    import onnx  # noqa: PLC0415
+
+    graph = model.graph
+    rewritten = 0
+    for output in graph.output:
+        tensor_type = output.type.tensor_type
+        if tensor_type.elem_type == onnx.TensorProto.FLOAT:
+            continue
+
+        original_name = output.name
+        cast_input = f"{original_name}_pre_float32_cast"
+        producer = next(
+            (node for node in graph.node if original_name in node.output),
+            None,
+        )
+        if producer is None:
+            raise RuntimeError(f"cannot find producer for graph output {original_name}")
+        for i, name in enumerate(producer.output):
+            if name == original_name:
+                producer.output[i] = cast_input
+
+        graph.node.append(
+            onnx.helper.make_node(
+                "Cast",
+                [cast_input],
+                [original_name],
+                name=f"{original_name}_to_float32",
+                to=onnx.TensorProto.FLOAT,
+            )
+        )
+        tensor_type.elem_type = onnx.TensorProto.FLOAT
+        rewritten += 1
+    return rewritten
 
 
 if __name__ == "__main__":
