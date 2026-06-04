@@ -4,7 +4,8 @@ T frames ~= T/100 seconds. On a 6 GB GPU T=501 (~5s) avoids WDDM paging and runs
 
 Pipeline (parameterized by T): ckpt -> export net_forward at (1,2050,T,2)
 (dynamo) -> fp16 (op_block_list) + sanitize non-finite weights -> WebGPU patch
-(Concat/Split trees <=15, optional fp16-softmax) -> fixed-T ONNX artifact.
+(Concat/Split trees <=15, optional fp16-softmax) -> fold constant rotary
+Sin/Cos tables and prune dead initializers -> fixed-T ONNX artifact.
 
 Run (from the repo root):
   uv run --group export python scripts/onnx/export_chunk.py \
@@ -182,6 +183,126 @@ def unwrap_softmax_fp16(graph):
     return len(drop)
 
 
+SLICE_STARTS_INPUT = 1
+SLICE_ENDS_INPUT = 2
+SLICE_AXES_INPUT = 3
+SLICE_STEPS_INPUT = 4
+
+
+def initializer_array(name, inits):
+    # late import: onnx helpers loaded only when patching
+    from onnx import numpy_helper  # noqa: PLC0415
+
+    tensor = inits.get(name)
+    return None if tensor is None else numpy_helper.to_array(tensor)
+
+
+def constant_slice(node, inits):
+    if node.op_type != "Slice" or not node.input:
+        return None
+    data = initializer_array(node.input[0], inits)
+    starts = initializer_array(node.input[SLICE_STARTS_INPUT], inits)
+    ends = initializer_array(node.input[SLICE_ENDS_INPUT], inits)
+    if data is None or starts is None or ends is None:
+        return None
+    axes = (
+        initializer_array(node.input[SLICE_AXES_INPUT], inits)
+        if len(node.input) > SLICE_AXES_INPUT and node.input[SLICE_AXES_INPUT]
+        else np.arange(len(starts), dtype=np.int64)
+    )
+    steps = (
+        initializer_array(node.input[SLICE_STEPS_INPUT], inits)
+        if len(node.input) > SLICE_STEPS_INPUT and node.input[SLICE_STEPS_INPUT]
+        else np.ones(len(starts), dtype=np.int64)
+    )
+    slices = [slice(None)] * data.ndim
+    for start, end, axis_value, step in zip(starts, ends, axes, steps, strict=False):
+        axis = int(axis_value)
+        slices[axis] = slice(int(start), int(end), int(step))
+    return data[tuple(slices)]
+
+
+def replace_nodes(graph, drop_ids):
+    kept = [node for node in graph.node if id(node) not in drop_ids]
+    del graph.node[:]
+    graph.node.extend(kept)
+
+
+def fold_constant_trig_nodes(graph):
+    from onnx import numpy_helper  # noqa: PLC0415
+
+    inits = {t.name: t for t in graph.initializer}
+    producer = {o: n for n in graph.node for o in n.output}
+    drop_ids = set()
+    folded = 0
+    for node in list(graph.node):
+        if node.op_type not in {"Sin", "Cos"} or len(node.input) != 1:
+            continue
+        source = initializer_array(node.input[0], inits)
+        source_producer = producer.get(node.input[0])
+        if source is None and source_producer is not None:
+            source = constant_slice(source_producer, inits)
+        if source is None:
+            continue
+        op = np.sin if node.op_type == "Sin" else np.cos
+        value = op(source.astype(np.float32)).astype(source.dtype)
+        graph.initializer.append(numpy_helper.from_array(value, node.output[0]))
+        drop_ids.add(id(node))
+        folded += 1
+    if drop_ids:
+        replace_nodes(graph, drop_ids)
+    return folded
+
+
+def prune_dead_nodes(graph):
+    graph_outputs = {o.name for o in graph.output}
+    while True:
+        used = {i for node in graph.node for i in node.input if i}
+        removable = [
+            node
+            for node in graph.node
+            if node.output
+            and all(
+                output not in used and output not in graph_outputs
+                for output in node.output
+            )
+        ]
+        if not removable:
+            return
+        replace_nodes(graph, {id(node) for node in removable})
+
+
+def prune_initializers_and_value_info(graph):
+    graph_outputs = {o.name for o in graph.output}
+    used = {i for node in graph.node for i in node.input if i}
+    keep_names = used | {i.name for i in graph.input} | graph_outputs
+    before = len(graph.initializer)
+    kept_initializers = [t for t in graph.initializer if t.name in keep_names]
+    del graph.initializer[:]
+    graph.initializer.extend(kept_initializers)
+
+    live_values = keep_names | {o for node in graph.node for o in node.output}
+    for vi in list(graph.value_info):
+        if vi.name not in live_values:
+            graph.value_info.remove(vi)
+    return before - len(kept_initializers)
+
+
+def fold_constant_trig_and_prune(graph):
+    """Materialize constant Sin/Cos nodes and remove dead export leftovers.
+
+    Torch exports rotary embedding caches as cached_freqs -> Slice -> Sin/Cos.
+    ONNX Runtime's WebGPU session optimizer then tries to fold those constants
+    through a CPU pass and warns when no CPU kernel is available for the fp16
+    trig node. Folding them here keeps the published artifact quiet and avoids
+    runtime startup work.
+    """
+    folded = fold_constant_trig_nodes(graph)
+    prune_dead_nodes(graph)
+    removed_initializers = prune_initializers_and_value_info(graph)
+    return folded, removed_initializers
+
+
 def main() -> None:
     args = parse_args()
     output = args.output
@@ -246,10 +367,12 @@ def main() -> None:
     )
     nc, ns = split_wide_concat_split(m16.graph)
     nu = unwrap_softmax_fp16(m16.graph) if args.softmax == "fp16" else 0
+    nt, ni = fold_constant_trig_and_prune(m16.graph)
     counts = Counter(n.op_type for n in m16.graph.node)
     print(
         f"patched: softmax={args.softmax}, concat-split trees(c={nc},s={ns}), "
-        f"softmax-unwrap casts={nu}; nodes={sum(counts.values())}"
+        f"softmax-unwrap casts={nu}, folded trig={nt}, "
+        f"pruned initializers={ni}; nodes={sum(counts.values())}"
     )
 
     def _save(m):
