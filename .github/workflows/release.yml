@@ -12,7 +12,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: version
         run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - env:
@@ -37,7 +37,7 @@ jobs:
           torchaudio==2.8.0
           skey @ https://github.com/popelenkow/musetric-toolkit/releases/download/v${VERSION}/${SKEY_WHEEL}
           EOF
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: release-assets
           path: dist/*
@@ -46,11 +46,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: release-assets
           path: ./dist
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v2
         with:
           files: ./dist/*
         env:
