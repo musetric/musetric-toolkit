@@ -1,5 +1,7 @@
 from pathlib import Path
 
+# Third-party model/data sources used by the audio workflows.
+# See thirdPartyNotices.md for source, license, and attribution details.
 model_checkpoint_url = "https://huggingface.co/SYH99999/MelBandRoformerBigSYHFTV1Fast/resolve/main/MelBandRoformerBigSYHFTV1.ckpt"
 model_config_url = "https://huggingface.co/SYH99999/MelBandRoformerBigSYHFTV1Fast/resolve/main/config.yaml"
 

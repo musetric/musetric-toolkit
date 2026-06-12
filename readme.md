@@ -5,6 +5,7 @@ Standalone CLI tool extracted from [Musetric](https://github.com/popelenkow/muse
 ## Installation
 
 Install the package directly from the latest GitHub release. Pick the `cuda` or `cpu` extra to match the PyTorch index — it selects the matching `onnxruntime-gpu` / `onnxruntime` distribution.
+
 ```bash
 uv tool install --python 3.13.2 \
   --default-index https://pypi.org/simple \
@@ -15,6 +16,7 @@ uv tool install --python 3.13.2 \
 ```
 
 For local development, install the CLI in editable mode.
+
 ```bash
 uv tool install --python 3.13.2 --editable ".[cuda]" \  ".[cpu]"
   --default-index https://pypi.org/simple \
@@ -48,19 +50,7 @@ musetric-transcribe \
   --log-level info  # debug|info|warn|error (default: info)
 ```
 
-## Dependencies
-
-### BSRoformer Neural Network
-
-- **Source:** https://github.com/lucidrains/BS-RoFormer by Phil Wang (MIT)
-- **Usage:** Audio source separation model (adapted)
-- **Thanks to:** https://github.com/nomadkaraoke/python-audio-separator (MIT) — research tool that helped validate the BSRoformer approach and integration patterns
-
-### WhisperX Speech Transcription
-
-- **Source:** https://github.com/m-bain/whisperX by Max Bain (MIT)
-- **Usage:** Speech-to-text + word-level alignment for `musetric-transcribe`
-
 ## License
 
 Musetric Toolkit is [MIT licensed](https://github.com/popelenkow/Musetric/blob/main/license.md).
+Third-party notices are listed in [thirdPartyNotices.md](thirdPartyNotices.md).

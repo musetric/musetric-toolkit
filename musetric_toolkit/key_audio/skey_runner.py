@@ -1,5 +1,8 @@
 import torch
 
+# SKey integration for musical key detection.
+# SKey is MIT-licensed by Deezer; see thirdPartyNotices.md.
+
 
 def run_skey(audio_path: str) -> tuple[str, str, float]:
     from skey.key_detection import (  # noqa: PLC0415

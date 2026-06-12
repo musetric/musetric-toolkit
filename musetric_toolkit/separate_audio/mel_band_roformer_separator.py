@@ -14,6 +14,9 @@ from musetric_toolkit.separate_audio.roformer_utils import (
     dict_to_namespace,
 )
 
+# Uses the BS-RoFormer-derived MelBandRoformer implementation and compatible
+# SYHFT checkpoint/config. See thirdPartyNotices.md for attribution.
+
 
 class MelBandRoformerSeparator:
     def __init__(
