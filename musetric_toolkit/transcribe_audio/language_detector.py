@@ -3,6 +3,9 @@ import logging
 
 from whisperx.vads import Pyannote, Vad
 
+# Uses WhisperX VAD internals for full-track language sampling.
+# WhisperX is BSD-2-Clause; see thirdPartyNotices.md.
+
 LANGUAGE_DETECTION_WINDOW_SECONDS = 20
 MIN_SPEECH_SECONDS = 0.5
 

@@ -13,6 +13,9 @@ from musetric_toolkit.separate_audio.ffmpeg.write import write_audio_file
 from musetric_toolkit.separate_audio.roformer.mel_band_roformer import MelBandRoformer
 from musetric_toolkit.separate_audio.roformer_utils import dict_to_namespace
 
+# ONNX host for the BS-RoFormer-derived MelBandRoformer separation path.
+# See thirdPartyNotices.md for attribution.
+
 
 class MelBandRoformerOnnxSeparator:
     """ONNX-backed separator for manual validation of an exported NN core.

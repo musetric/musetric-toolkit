@@ -34,6 +34,9 @@ from musetric_toolkit.transcribe_audio.silence_filter import (
     filter_silent_segments,
 )
 
+# WhisperX integration for transcription and alignment.
+# WhisperX is BSD-2-Clause; see thirdPartyNotices.md.
+
 
 def configure_torch_serialization() -> None:
     # Allowlist safe types used by OmegaConf/typing in PyTorch weights-only loads.
