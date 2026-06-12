@@ -19,7 +19,6 @@ __snapshots__/
 generated/
 .claude
 CLAUDE.md
-AGENTS.md
 
 .yarn/*
 !.yarn/cache
