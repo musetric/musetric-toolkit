@@ -4,19 +4,11 @@ Standalone CLI tool extracted from [Musetric](https://github.com/popelenkow/muse
 
 ## Installation
 
-The toolkit is CUDA-only: it pulls the CUDA 12.9 PyTorch build and
-`onnxruntime-gpu`, and is supported on Linux x86_64 and Windows (NVIDIA GPU).
-Install the CLI in editable mode:
+Requires an NVIDIA GPU (CUDA 12.9) on Linux x86_64 or Windows.
 
 ```bash
-uv tool install --python 3.13.11 --editable "." \
-  --default-index https://pypi.org/simple \
-  --index https://download.pytorch.org/whl/cu129 \
-  --index-strategy unsafe-best-match
+uv tool install --python 3.13.11 --editable "."
 ```
-
-`onnxruntime-gpu` exposes the CUDA / DirectML execution providers and falls back
-to the CPU provider when no GPU is present.
 
 ## CLI Usage
 
