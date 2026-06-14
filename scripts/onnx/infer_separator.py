@@ -3,14 +3,6 @@
 This is a manual validation entry point. The toolkit's regular CLI still uses
 the torch model; this script is for checking that an exported ONNX core can run
 through onnxruntime before the artifact is consumed elsewhere.
-
-Run from the repository root:
-  uv run --group export --extra cpu python scripts/onnx/infer_separator.py \
-    --model tmp/models/model.onnx \
-    --config tmp/models/config.yaml \
-    --source path/to/input.wav \
-    --target-output tmp/out/target.flac \
-    --residual-output tmp/out/residual.flac
 """
 
 import argparse

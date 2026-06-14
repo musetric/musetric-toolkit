@@ -43,7 +43,7 @@ Then run Python ONNX inference on it (config comes from the source checkpoint
 download, see `download_big_syhft`):
 
 ```bash
-uv run --group export --extra cpu python scripts/onnx/infer_separator.py \
+uv run --group export python scripts/onnx/infer_separator.py \
   --model tmp/models/syhft_core_fp16_t501.onnx \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --source path/to/input.flac \
@@ -54,18 +54,18 @@ uv run --group export --extra cpu python scripts/onnx/infer_separator.py \
 ## Install Tooling
 
 The ONNX build dependencies live in the `export` dependency group, not in the
-default install. Install one runtime extra only when you want to run or validate
+default install. `onnxruntime-gpu` (CUDA / DirectML / CPU execution providers)
+ships in the default install, so syncing the group is enough to run or validate
 the exported graph:
 
 ```bash
-uv sync --group export --extra cpu
-uv sync --group export --extra cuda
+uv sync --group export
 ```
 
 ## Build
 
 ```bash
-uv run --group export --extra cpu python scripts/onnx/build_core_onnx.py \
+uv run --group export python scripts/onnx/build_core_onnx.py \
   --checkpoint tmp/models/model.ckpt \
   --config tmp/models/config.yaml \
   --output tmp/models/model_core.onnx
@@ -78,7 +78,7 @@ onnxruntime can path-load the graph, and checks that the graph contains no
 ## Convert to FP16
 
 ```bash
-uv run --group export --extra cpu python scripts/onnx/convert_fp16.py \
+uv run --group export python scripts/onnx/convert_fp16.py \
   --input tmp/models/model_core.onnx \
   --output tmp/models/model_core_fp16.onnx
 ```
@@ -142,7 +142,7 @@ uv run python scripts/onnx/build_full_onnx.py --check \
 #    quality: smaller T loses separation context — full-track vs torch fp32 T=1101
 #    is ~28 dB @ T=901, ~24 dB @ T=501; fp16 itself is ~48 dB at any T). Drop --fuse
 #    for the old unfused build.
-uv run --group export --extra cpu python scripts/onnx/build_full_onnx.py \
+uv run --group export python scripts/onnx/build_full_onnx.py \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --output tmp/models/syhft_full_fp16_t1101.onnx --fuse --frames 1101  # default (quality)
@@ -167,7 +167,7 @@ full one. Build it with `--core-only` (same `--fuse` fp16/fusion pipeline, but
 exports `stft_repr -> masks` instead of `raw_audio -> vocals`):
 
 ```bash
-uv run --group export --extra cpu python scripts/onnx/build_full_onnx.py \
+uv run --group export python scripts/onnx/build_full_onnx.py \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --output tmp/models/syhft_core_fused_fp16.onnx --fuse --core-only --frames 1101 --skip-gate
@@ -205,7 +205,7 @@ uv run --group export python scripts/onnx/op_audit.py tmp/models/model_core.onnx
 ## Run Python ONNX Inference
 
 ```bash
-uv run --group export --extra cpu python scripts/onnx/infer_separator.py \
+uv run --group export python scripts/onnx/infer_separator.py \
   --model tmp/models/model_core.onnx \
   --config tmp/models/config.yaml \
   --source path/to/input.wav \

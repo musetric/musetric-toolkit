@@ -3,11 +3,6 @@
 keep_io_types=True keeps stft_repr in / masks out as FP32 (cast nodes inserted
 internally), so the separator feeds/receives fp32 unchanged — only the NN core
 runs fp16. Output is repacked (small tensors inline) for onnxruntime path-load.
-
-Run (no torch needed; needs an onnxruntime extra for the path-load check):
-  uv run --group export --extra cpu python scripts/onnx/convert_fp16.py \
-    --input tmp/models/model_core.onnx \
-    --output tmp/models/model_core_fp16.onnx
 """
 
 # ruff: noqa: T201 -- CLI build tool: stdout (progress/results) is its interface.

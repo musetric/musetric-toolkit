@@ -6,14 +6,6 @@ Pipeline (parameterized by T): ckpt -> export net_forward at (1,2050,T,2)
 (dynamo) -> fp16 (op_block_list) + sanitize non-finite weights -> WebGPU patch
 (Concat/Split trees <=15, optional fp16-softmax) -> fold constant rotary
 Sin/Cos tables and prune dead initializers -> fixed-T ONNX artifact.
-
-Run (from the repo root):
-  uv run --group export python scripts/onnx/export_chunk.py \
-    --checkpoint tmp/models/model.ckpt \
-    --config tmp/models/config.yaml \
-    --output tmp/models/model_core_fp16_webgpu_t501.onnx \
-    --frames 501 \
-    --softmax fp16
 """
 
 # ruff: noqa: T201 -- CLI build tool: stdout (progress/results) is its interface.

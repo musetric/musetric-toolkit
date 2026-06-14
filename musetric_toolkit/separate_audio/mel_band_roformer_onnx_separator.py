@@ -26,8 +26,7 @@ class MelBandRoformerOnnxSeparator:
     The full torch checkpoint is not loaded: only config-derived host buffers are
     needed for the surrounding DSP stages.
 
-    onnxruntime is an optional dependency and is imported lazily. Install one
-    runtime distribution with ``uv sync --extra cpu`` or ``uv sync --extra cuda``.
+    onnxruntime-gpu ships in the default install and is imported lazily.
     """
 
     def __init__(
@@ -70,15 +69,14 @@ class MelBandRoformerOnnxSeparator:
         return host.to(self.device).eval()
 
     def _make_session(self):
-        # onnxruntime is an optional extra: import lazily so module import never
-        # depends on it. Raise a clear message if the extra is not installed.
+        # onnxruntime-gpu ships in the default install; import lazily so module
+        # import never pays the onnxruntime cost unless ONNX separation is used.
         try:
-            import onnxruntime as ort  # noqa: PLC0415  (optional extra, lazy import)
+            import onnxruntime as ort  # noqa: PLC0415  (lazy import)
         except ImportError as exc:
             raise ImportError(
                 "onnxruntime is required for MelBandRoformerOnnxSeparator. "
-                "Install an onnxruntime distribution via the optional extras, e.g. "
-                "`uv sync --extra cpu` (CPU) or `uv sync --extra cuda` (GPU)."
+                "It ships with the default install (`uv sync`) as onnxruntime-gpu."
             ) from exc
 
         # Prefer a GPU EP per cross-platform matrix: CUDA (Linux/NVIDIA),

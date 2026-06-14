@@ -2,10 +2,7 @@
 use the ORT contrib fused ops we want (SimplifiedLayerNormalization, FastGelu,
 SkipSimplifiedLayerNormalization), so a Node-side runner can check whether the
 onnxruntime-node WebGPU EP actually executes them as WebGPU kernels (vs CPU
-fallback). Run:
-
-  uv run --group export python scripts/onnx/probe_webgpu_fused_ops.py \
-    --out-dir tmp/probe
+fallback).
 """
 
 # ruff: noqa: T201
