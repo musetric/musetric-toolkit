@@ -2,7 +2,7 @@
 
 ## Context
 
-- This is a Python 3.13.2 project managed with `uv`.
+- This is a Python 3.13.11 project managed with `uv`.
 - Prefer existing `uv run` scripts and tools; use free-form commands only when no script exists.
 
 ## Commits & PR Titles

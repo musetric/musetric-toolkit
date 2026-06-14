@@ -1,20 +1,24 @@
 import torch
 
+from musetric_toolkit.key_audio.skey_checkpoint import ensure_checkpoint
+
 # SKey integration for musical key detection.
-# SKey is MIT-licensed by Deezer; see thirdPartyNotices.md.
+# SKey is MIT-licensed by Deezer; see thirdPartyNotices.md. The inference subset
+# is vendored under musetric_toolkit/key_audio/skey.
 
 
-def run_skey(audio_path: str) -> tuple[str, str, float]:
-    from skey.key_detection import (  # noqa: PLC0415
-        DEFAULT_CHECKPOINT_PATH,
+def run_skey(audio_path: str, models_path: str) -> tuple[str, str, float]:
+    from musetric_toolkit.key_audio.skey.key_detection import (  # noqa: PLC0415
         key_map,
         load_audio,
         load_checkpoint,
         load_model_components,
     )
 
+    checkpoint_path = ensure_checkpoint(models_path)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt = load_checkpoint(DEFAULT_CHECKPOINT_PATH)
+    ckpt = load_checkpoint(checkpoint_path)
     sample_rate = ckpt["audio"]["sr"]
     hcqt, chromanet, crop_fn = load_model_components(ckpt, device)
 
