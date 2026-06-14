@@ -4,11 +4,6 @@ Decodes a real ~5s chunk from a track, runs the torch FullSeparator, and writes
 the input chunk + reference vocals as raw little-endian f32 (planar [2,220500])
 so the Node WebGPU validator (packages/ai/tmp/validate_full_webgpu.ts) can run
 the ONNX on WebGPU and compare.
-
-  uv run python scripts/onnx/validate_full_onnx.py \
-    --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
-    --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
-    --source tmp/sample.flac --out-dir tmp/bench_out
 """
 
 # ruff: noqa: T201, N806

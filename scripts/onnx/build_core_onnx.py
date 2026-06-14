@@ -5,13 +5,7 @@ inline so onnxruntime loads by path / mmaps weights) -> op audit.
 
 Boundary: only net_forward (the NN) goes to ONNX; STFT/iSTFT stay host-side
 (torch here, another host runtime later). flash_attn=False -> matmul attention
-(portable across onnxruntime EPs). See converting.md.
-
-Run (from the repo root; needs an onnxruntime extra for the path-load check):
-  uv run --group export --extra cpu python scripts/onnx/build_core_onnx.py \
-    --checkpoint tmp/models/model.ckpt \
-    --config tmp/models/config.yaml \
-    --output tmp/models/model_core.onnx
+(portable across onnxruntime EPs).
 """
 
 # ruff: noqa: T201 -- CLI build tool: stdout (progress/results) is its interface.

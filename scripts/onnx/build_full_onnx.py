@@ -6,15 +6,6 @@ STFT/iSTFT are implemented as Conv1d / ConvTranspose1d with precomputed
 window x DFT-basis weights (NOT torch.stft/istft, which export to the WebGPU-
 unsupported STFT/DFT ops). Mask-apply uses real-arithmetic scatter_add (complex
 ops don't export to ONNX). The NN core (`net_forward`) is reused unchanged.
-
-Run from the repo root:
-  # numerics gate only (torch vs model.forward, CPU):
-  uv run python scripts/onnx/build_full_onnx.py --check \
-    --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
-    --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml
-  # full export + fp16:
-  uv run --group export python scripts/onnx/build_full_onnx.py \
-    --checkpoint ... --config ... --output tmp/models/syhft_full_t501.onnx
 """
 
 # ruff: noqa: T201

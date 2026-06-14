@@ -7,6 +7,7 @@ requires-python = "==3.13.11"
 dependencies = [
     "torch==2.8.0",
     "torchaudio==2.8.0",
+    "torchvision==0.23.0",
     "rotary-embedding-torch==0.8.9",
     "einops==0.8.2",
     "numpy==2.4.6",
@@ -19,11 +20,8 @@ dependencies = [
     "soundfile==0.14.0",
     "nnAudio==0.3.4",
     "librosa==0.11.0",
+    "onnxruntime-gpu==1.26.0",
 ]
-
-[project.optional-dependencies]
-cpu = ["onnxruntime==1.26.0"]
-cuda = ["onnxruntime-gpu==1.26.0"]
 
 [project.scripts]
 musetric-separate = "musetric_toolkit.separate_audio.main_cli:main_cli"
@@ -33,10 +31,28 @@ musetric-key = "musetric_toolkit.key_audio.main_cli:main_cli"
 musetric-chords = "musetric_toolkit.chords_audio.main_cli:main_cli"
 
 [tool.uv]
-override-dependencies = [
-    "torch==2.8.0",
-    "torchaudio==2.8.0",
+# CUDA-only: resolve the torch stack from the CUDA 12.9 PyTorch index and lock
+# only for platforms with CUDA wheels (Linux x86_64, Windows). macOS / non-x86
+# have no CUDA builds and are intentionally unsupported. torchcodec is left on
+# PyPI: cu129 only ships torchcodec >=0.10, but whisperx pins it to <0.8.0.
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'win32'",
 ]
+# faster-whisper hard-depends on the CPU `onnxruntime` package. Override it away
+# with a never-matching marker so only onnxruntime-gpu is installed; both ship the
+# same `onnxruntime` import, so faster-whisper's VAD keeps working on the GPU build.
+override-dependencies = ["onnxruntime; sys_platform == 'no-such-platform'"]
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu129" }
+torchaudio = { index = "pytorch-cu129" }
+torchvision = { index = "pytorch-cu129" }
 
 [dependency-groups]
 check = [

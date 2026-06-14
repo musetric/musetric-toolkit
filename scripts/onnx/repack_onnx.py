@@ -7,11 +7,6 @@ tensors"), forcing a SerializeToString() bytes load that needs ~1.5GB extra RAM
 inline (big weights stay external) -> ORT loads by path, mmapping weights.
 
 build_core_onnx.py already does this inline; this is the standalone step.
-
-Run (no torch needed; needs an onnxruntime extra for the path-load check):
-  uv run --group export --extra cpu python scripts/onnx/repack_onnx.py \
-    --input tmp/models/model_raw.onnx \
-    --output tmp/models/model_core.onnx
 """
 
 # ruff: noqa: T201 -- CLI build tool: stdout (progress/results) is its interface.

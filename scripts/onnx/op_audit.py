@@ -1,8 +1,5 @@
 """List ONNX op types in a model graph.
 Loads graph only (load_external_data=False) -> low memory, fast.
-
-Run (no torch needed):
-  uv run --group export python scripts/onnx/op_audit.py tmp/models/model_core.onnx
 """
 
 # ruff: noqa: T201 -- CLI inspection tool: stdout (the op histogram) is its interface.

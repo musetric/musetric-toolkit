@@ -9,11 +9,6 @@ trips the hard device cap of 16 ("Too many storage buffers ... Current 17").
 Concat (fixed axis) and Split (fixed axis) are associative, so each wide node is
 rewritten into a two-level tree where every node touches <=15 variable buffers.
 Bit-identical to the original.
-
-Run (no torch needed):
-  uv run --group export python scripts/onnx/split_concat_webgpu.py \
-    --input tmp/models/model_core_fp16.onnx \
-    --output tmp/models/model_core_fp16_webgpu.onnx
 """
 
 from __future__ import annotations
