@@ -197,10 +197,10 @@ SOFTWARE.
 ## SKey
 
 - Source: https://github.com/deezer/skey
-- Usage: musical key detection through the `skey` Python package and its default checkpoint.
-- Local files: `musetric_toolkit/key_audio/skey_runner.py`, `musetric_toolkit/key_audio/main.py`.
+- Usage: musical key detection. The inference subset is vendored; the checkpoint is downloaded at runtime.
+- Local files: `musetric_toolkit/key_audio/skey/` (vendored inference code), `musetric_toolkit/key_audio/skey_runner.py`, `musetric_toolkit/key_audio/skey_checkpoint.py`, `musetric_toolkit/key_audio/main.py`.
 - License: MIT.
-- License source: installed package license file and upstream `LICENSE`.
+- License source: vendored `musetric_toolkit/key_audio/skey/LICENSE` and upstream `LICENSE`.
 
 MIT License
 

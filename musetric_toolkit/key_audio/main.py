@@ -9,7 +9,7 @@ from musetric_toolkit.key_audio.skey_runner import run_skey
 def main(args) -> None:
     send_message({"type": "progress", "progress": 0.0})
 
-    root, mode, confidence = run_skey(args.audio_path)
+    root, mode, confidence = run_skey(args.audio_path, args.models_path)
     send_message({"type": "progress", "progress": 0.9})
 
     payload = build_payload(root, mode, confidence)

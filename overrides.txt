@@ -1,3 +1,2 @@
 torch==2.8.0
 torchaudio==2.8.0
-skey @ git+https://github.com/deezer/skey.git
