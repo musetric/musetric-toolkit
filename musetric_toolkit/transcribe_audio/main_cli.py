@@ -85,6 +85,11 @@ def configure_warning_filters(log_level: str) -> None:
         message=r".*TensorFloat-32 \(TF32\) has been disabled.*",
         category=UserWarning,
     )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"\s*torchcodec is not installed correctly.*",
+        category=UserWarning,
+    )
 
 
 def configure_third_party_logging(log_level: str) -> None:
