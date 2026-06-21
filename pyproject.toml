@@ -74,10 +74,13 @@ build-backend = "hatchling.build"
 packages = ["musetric_toolkit"]
 
 [tool.black]
-exclude = "(.venv|musetric_toolkit/chords_audio/chordmini|musetric_toolkit/key_audio/skey)"
+exclude = "(.venv|tmp/|musetric_toolkit/chords_audio/chordmini|musetric_toolkit/key_audio/skey)"
 
 [tool.isort]
 profile = "black"
+# Skip gitignored paths (scratch dirs, build output) so isort matches the file
+# set ruff and black already lint by default.
+skip_gitignore = true
 skip = [
     ".venv",
     "musetric_toolkit/chords_audio/chordmini",
