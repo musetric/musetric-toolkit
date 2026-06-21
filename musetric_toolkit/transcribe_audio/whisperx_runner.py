@@ -27,6 +27,9 @@ from musetric_toolkit.separate_audio.system_info import (
 from musetric_toolkit.transcribe_audio.download_progress import (
     intercept_hf_downloads,
 )
+from musetric_toolkit.transcribe_audio.hallucination_filter import (
+    filter_hallucinated_segments,
+)
 from musetric_toolkit.transcribe_audio.language_detector import (
     detect_language_fulltrack,
 )
@@ -263,8 +266,13 @@ def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
             compute_type=compute_type,
             vad_method="pyannote",
             vad_options={
-                "vad_onset": 0.65,
-                "vad_offset": 0.50,
+                # Lower onset/offset than before: large-v3 on isolated vocal
+                # stems was dropping breathy / low-energy sung phrases (high
+                # deletion rate). A more sensitive VAD recovers them; the
+                # extra low-energy regions it admits are cleaned up downstream
+                # by the RMS silence filter and the hallucination filter.
+                "vad_onset": 0.45,
+                "vad_offset": 0.35,
             },
         )
     audio = whisperx.load_audio(audio_path)
@@ -280,13 +288,14 @@ def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
             audio,
             batch_size=1,
             language=detected_language,
-            chunk_size=10,
+            chunk_size=30,
             print_progress=True,
             combined_progress=True,
         )
         progress_tracker.ensure_minimum(0.5)
 
     segments = filter_silent_segments(result.get("segments", []), audio)
+    segments = filter_hallucinated_segments(segments)
     detected_language = result.get("language", detected_language)
 
     try:

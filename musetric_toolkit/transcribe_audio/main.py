@@ -22,4 +22,4 @@ def main(args) -> None:
     output_path = Path(args.result_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as result_file:
-        json.dump(payload_segments, result_file, ensure_ascii=False)
+        json.dump(payload_segments, result_file, ensure_ascii=False, indent=2)
