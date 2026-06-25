@@ -5,6 +5,8 @@
 #   fix(separate): handle silent audio input
 #   ci(github): cancel superseded prTitle runs
 #
+# The full line `type(scope): subject` must be 70 characters or less.
+#
 # Read by .github/workflows/prTitle.yml and enforced on every PR title.
 # Inline comments below document what each key means and when to use it.
 #

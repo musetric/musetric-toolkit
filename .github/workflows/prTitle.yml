@@ -43,3 +43,5 @@ jobs:
           requireScope: true
           types: ${{ steps.config.outputs.types }}
           scopes: ${{ steps.config.outputs.scopes }}
+          subjectPattern: '^.{20,70}$'
+          subjectPatternError: 'Subject must be 20-70 characters'
