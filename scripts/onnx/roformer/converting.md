@@ -43,7 +43,7 @@ Then run Python ONNX inference on it (config comes from the source checkpoint
 download, see `download_big_syhft`):
 
 ```bash
-uv run --group export python scripts/onnx/infer_separator.py \
+uv run --group export python scripts/onnx/roformer/infer_separator.py \
   --model tmp/models/syhft_core_fp16_t501.onnx \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --source path/to/input.flac \
@@ -65,7 +65,7 @@ uv sync --group export
 ## Build
 
 ```bash
-uv run --group export python scripts/onnx/build_core_onnx.py \
+uv run --group export python scripts/onnx/roformer/build_core_onnx.py \
   --checkpoint tmp/models/model.ckpt \
   --config tmp/models/config.yaml \
   --output tmp/models/model_core.onnx
@@ -78,7 +78,7 @@ onnxruntime can path-load the graph, and checks that the graph contains no
 ## Convert to FP16
 
 ```bash
-uv run --group export python scripts/onnx/convert_fp16.py \
+uv run --group export python scripts/onnx/roformer/convert_fp16.py \
   --input tmp/models/model_core.onnx \
   --output tmp/models/model_core_fp16.onnx
 ```
@@ -90,7 +90,7 @@ conversion.
 ## Patch Wide Concat/Split Nodes
 
 ```bash
-uv run --group export python scripts/onnx/split_concat_webgpu.py \
+uv run --group export python scripts/onnx/roformer/split_concat_webgpu.py \
   --input tmp/models/model_core_fp16.onnx \
   --output tmp/models/model_core_fp16_webgpu.onnx
 ```
@@ -102,7 +102,7 @@ limits.
 ## Export a Custom Static Chunk
 
 ```bash
-uv run --group export python scripts/onnx/export_chunk.py \
+uv run --group export python scripts/onnx/roformer/export_chunk.py \
   --checkpoint tmp/models/model.ckpt \
   --config tmp/models/config.yaml \
   --output tmp/models/model_core_fp16_t501.onnx \
@@ -125,7 +125,7 @@ real-arithmetic `scatter_add`. The NN core (`net_forward`) is reused unchanged.
 
 ```bash
 # 1. numerics gate (torch FullSeparator vs model.forward, CPU) — should print PASS
-uv run python scripts/onnx/build_full_onnx.py --check \
+uv run python scripts/onnx/roformer/build_full_onnx.py --check \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml
 
@@ -142,13 +142,13 @@ uv run python scripts/onnx/build_full_onnx.py --check \
 #    quality: smaller T loses separation context — full-track vs torch fp32 T=1101
 #    is ~28 dB @ T=901, ~24 dB @ T=501; fp16 itself is ~48 dB at any T). Drop --fuse
 #    for the old unfused build.
-uv run --group export python scripts/onnx/build_full_onnx.py \
+uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --output tmp/models/syhft_full_fp16_t1101.onnx --fuse --frames 1101  # default (quality)
 
 # 3. WebGPU buffer-cap patch -> the model @musetric/ai loads
-uv run --group export python scripts/onnx/split_concat_webgpu.py \
+uv run --group export python scripts/onnx/roformer/split_concat_webgpu.py \
   --input tmp/models/syhft_full_fp16_t1101.onnx \
   --output tmp/models/syhft_full_webgpu_t1101.onnx
 ```
@@ -167,11 +167,11 @@ full one. Build it with `--core-only` (same `--fuse` fp16/fusion pipeline, but
 exports `stft_repr -> masks` instead of `raw_audio -> vocals`):
 
 ```bash
-uv run --group export python scripts/onnx/build_full_onnx.py \
+uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --output tmp/models/syhft_core_fused_fp16.onnx --fuse --core-only --frames 1101 --skip-gate
-uv run --group export python scripts/onnx/split_concat_webgpu.py \
+uv run --group export python scripts/onnx/roformer/split_concat_webgpu.py \
   --input tmp/models/syhft_core_fused_fp16.onnx \
   --output tmp/models/syhft_core_fused_fp16_webgpu.onnx
 ```
@@ -184,7 +184,7 @@ node on `WebGpuExecutionProvider`). The reference I/O comes from Python:
 # bench_out_t<frames>). Large T (>=~901) needs --device cuda: the CPU torch
 # forward segfaults on the 2.3 GB T² attention sim, while flash SDPA on cuda
 # never materializes it.
-uv run python scripts/onnx/validate_full_onnx.py \
+uv run python scripts/onnx/roformer/validate_full_onnx.py \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --source tmp/sample.flac --out-dir tmp/bench_out_t501 --frames 501
@@ -199,13 +199,13 @@ full graph is the Node runtime path.
 ## Inspect Ops
 
 ```bash
-uv run --group export python scripts/onnx/op_audit.py tmp/models/model_core.onnx
+uv run --group export python scripts/onnx/roformer/op_audit.py tmp/models/model_core.onnx
 ```
 
 ## Run Python ONNX Inference
 
 ```bash
-uv run --group export python scripts/onnx/infer_separator.py \
+uv run --group export python scripts/onnx/roformer/infer_separator.py \
   --model tmp/models/model_core.onnx \
   --config tmp/models/config.yaml \
   --source path/to/input.wav \
