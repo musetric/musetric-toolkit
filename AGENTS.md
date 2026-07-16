@@ -57,7 +57,7 @@
 - `musetric_toolkit/chords_audio/chordmini/` is excluded from black, isort, and ruff formatting.
 - ONNX-related export scripts live in `scripts/onnx/`, one directory per model
   family: `roformer/` (vocal separation), `whisper/` (ASR), `chordmini/` (chord
-  recognition), `skey/` (key detection).
+  recognition), `skey/` (key detection), `beat_this/` (rhythm).
 
 ## Before Finishing
 
