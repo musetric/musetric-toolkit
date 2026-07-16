@@ -1,3 +1,8 @@
+# Vendored from huggingface/transformers.js `scripts/quantize.py`.
+# Copyright The HuggingFace Team. Licensed under the Apache License, Version 2.0.
+# See http://www.apache.org/licenses/LICENSE-2.0 and this repo's
+# thirdPartyNotices.md.
+
 from enum import Enum
 
 from tqdm import tqdm

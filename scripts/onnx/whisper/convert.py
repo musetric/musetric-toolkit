@@ -1,4 +1,12 @@
 
+# Vendored from huggingface/transformers.js `scripts/convert.py`.
+# Copyright The HuggingFace Team. Licensed under the Apache License, Version 2.0.
+# See http://www.apache.org/licenses/LICENSE-2.0 and this repo's
+# thirdPartyNotices.md.
+#
+# Local changes: package-relative import of `quantize`; only the whisper code
+# path is exercised.
+
 import json
 import os
 import shutil
