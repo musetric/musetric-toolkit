@@ -1,3 +1,10 @@
+# Vendored from huggingface/transformers.js `scripts/extra/whisper.py`.
+# Copyright The HuggingFace Team. Licensed under the Apache License, Version 2.0.
+# See http://www.apache.org/licenses/LICENSE-2.0 and this repo's
+# thirdPartyNotices.md.
+#
+# Local changes: added the 'whisper-large-v3' alignment-head entry (see below).
+
 from optimum.exporters.onnx.model_configs import WhisperOnnxConfig
 
 from optimum.exporters.onnx.base import ConfigBehavior

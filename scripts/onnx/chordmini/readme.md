@@ -96,9 +96,9 @@ exceeds `1e-4`.
 
 ## Validating end to end
 
-The classifier check above covers the export, not the features. End-to-end
-parity against the torch + librosa runner is measured from the TypeScript side by
-`validateChordNetWebGpu` in `@musetric/ai`, which runs the real WebGPU CQT.
+The classifier check above covers the export, not the features. Only the
+TypeScript side can measure the whole pipeline, because the CQT runs on WebGPU;
+compare its chord output against the `musetric-chords` CLI on the same audio.
 
 Validate on the material fed in production — the instrumental stem. Agreement
 measured on audio where the reference emits a near-constant label (for example,
