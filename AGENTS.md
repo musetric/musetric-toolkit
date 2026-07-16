@@ -56,7 +56,8 @@
 - All source code lives under `musetric_toolkit/`.
 - `musetric_toolkit/chords_audio/chordmini/` is excluded from black, isort, and ruff formatting.
 - ONNX-related export scripts live in `scripts/onnx/`, one directory per model
-  family: `roformer/` (vocal separation), `whisper/` (ASR).
+  family: `roformer/` (vocal separation), `whisper/` (ASR), `chordmini/` (chord
+  recognition).
 
 ## Before Finishing
 
