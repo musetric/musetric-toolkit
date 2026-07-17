@@ -2,13 +2,21 @@
 """Patch wide Concat/Split nodes for execution providers with buffer-count caps.
 
 The WebGPU EP gives each Concat input / Split output its own storage buffer and
-batches them in groups of `maxStorageBuffersPerShaderStage` (16 on this
-NVIDIA/Dawn adapter), so any node with >15 inputs+outputs in a single program
-trips the hard device cap of 16 ("Too many storage buffers ... Current 17").
+batches them in groups of `maxStorageBuffersPerShaderStage`, so any node with too
+many inputs+outputs in a single program trips the hard device cap ("Too many
+storage buffers ...").
+
+That cap is *not* the same across platforms. Dawn/Vulkan on NVIDIA reports 16,
+but Dawn/Metal on macOS reports only **10** (a Metal argument-buffer limit; see
+https://issues.chromium.org/issues/505056912). We target the smallest shipping
+cap so one artifact runs everywhere: a shader touches `variable buffers + 1`
+storage buffers, so GROUP=8 keeps every rewritten node at <=9 storage buffers,
+clear of the macOS 10 floor.
 
 Concat (fixed axis) and Split (fixed axis) are associative, so each wide node is
-rewritten into a two-level tree where every node touches <=15 variable buffers.
-Bit-identical to the original.
+rewritten into a tree where every node touches <=GROUP variable buffers.
+Bit-identical to the original. The rewrite is idempotent-safe: re-running it on an
+already-patched model just re-trees any node still wider than GROUP.
 """
 
 from __future__ import annotations
@@ -20,7 +28,7 @@ import numpy as np
 import onnx
 from onnx import helper, numpy_helper
 
-GROUP = 15  # <=15 variable buffers + 1 -> <=16 storage buffers per shader
+GROUP = 8  # <=8 variable buffers + 1 -> <=9 storage buffers (macOS/Metal cap = 10)
 
 parser = argparse.ArgumentParser(description="Patch wide Concat/Split nodes.")
 parser.add_argument("--input", required=True, type=Path)
