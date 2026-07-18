@@ -2,7 +2,7 @@
 
 Exports the vendored **S-KEY** key detector (harmonic VQT + ChromaNet) to a
 single self-contained ONNX graph consumed by the
-[`musetric`](https://github.com/popelenkow/musetric) `@musetric/ai` runtime on
+[`musetric`](https://github.com/musetric/musetric) `@musetric/ai` runtime on
 **onnxruntime-web**.
 
 Like the chordmini export (and unlike whisper's transformers.js layout), the

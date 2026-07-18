@@ -2,7 +2,7 @@
 
 Exports the **Beat This!** beat/downbeat tracker (the `beat-this` package the
 `musetric-rhythm` CLI runs) to ONNX for the
-[`musetric`](https://github.com/popelenkow/musetric) `@musetric/ai` runtime on
+[`musetric`](https://github.com/musetric/musetric) `@musetric/ai` runtime on
 **onnxruntime-web**.
 
 Like the chordmini export, the graph covers only the neural boundary; feature
