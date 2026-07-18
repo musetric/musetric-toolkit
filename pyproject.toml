@@ -2,7 +2,7 @@
 name = "musetric-toolkit"
 version = "0.0.1"
 description = "Musetric Toolkit"
-authors = [{ name = "Vladlen Popelenkov", email = "popelenkow@gmail.com" }]
+authors = [{ name = "Musetric", email = "musetric@gmail.com" }]
 requires-python = "==3.13.11"
 dependencies = [
     "torch==2.8.0",
