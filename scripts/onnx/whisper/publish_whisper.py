@@ -1,6 +1,6 @@
-"""Publish the Whisper large-v3 (word-timestamped) ONNX repo to Hugging Face.
+"""Publish the Whisper large-v3-turbo (word-timestamped) ONNX repo to Hugging Face.
 
-Uploads the staged `deps/whisper-large-v3-onnx/` folder (see stage_whisper.py):
+Uploads the staged `deps/whisper-large-v3-turbo-onnx/` folder (see stage_whisper.py):
 the q4 encoder + merged decoder, the tokenizer/config JSON, and the README model
 card. The `@musetric/ai` runtime loads it with `@huggingface/transformers` on the
 onnxruntime-web WebGPU EP, so the repo is the FULL transformers.js layout.
@@ -41,9 +41,11 @@ PUBLISH_FILES = [
 ]
 
 # Repo layout: <root>/music/musetric-toolkit/scripts/onnx/whisper/publish_whisper.py
-# and <root>/deps/whisper-large-v3-onnx — so parents[5] is <root>.
-DEFAULT_SRC = Path(__file__).resolve().parents[5] / "deps" / "whisper-large-v3-onnx"
-DEFAULT_REPO = "musetric/whisper-large-v3-onnx"
+# and <root>/deps/whisper-large-v3-turbo-onnx — so parents[5] is <root>.
+DEFAULT_SRC = (
+    Path(__file__).resolve().parents[5] / "deps" / "whisper-large-v3-turbo-onnx"
+)
+DEFAULT_REPO = "musetric/whisper-large-v3-turbo-onnx"
 
 
 def sha256(path: Path) -> str:
