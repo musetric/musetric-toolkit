@@ -5,6 +5,7 @@ import re
 import shutil
 import sys
 import typing
+import zlib
 from contextlib import contextmanager, suppress
 from importlib.util import find_spec
 from pathlib import Path
@@ -347,6 +348,26 @@ _LOOP_DOMINANCE_RATIO = 0.6  # one token covering this fraction of a line is a l
 _ONSET_BAND_HZ = (100, 4000)  # vocal band the flux is measured in
 _ONSET_MIN_FRAMES = 5  # too few frames to judge an onset rate
 
+# --- Loop guard -------------------------------------------------------------
+#
+# A chunk whose text compresses far better than natural language is a decoder
+# loop ("nein, nein, nein, ..."), not a transcription. WhisperX's batched path
+# never runs faster-whisper's temperature fallback, so a loop is final unless we
+# re-decode it ourselves. Detection is whisper's own compression-ratio test;
+# the retries add the repetition constraints CTranslate2 accepts through
+# `generate`, which is what the browser runtime's guard does.
+#
+# The threshold is *not* whisper's own 2.4: that is calibrated on speech, and
+# sung lyrics repeat by design. Measured per chunk on the leads corpus, a
+# legitimate chorus reaches 2.9 while a real decoder loop sits at 4.3+. Firing
+# in between re-decodes real choruses and measurably loses words.
+_LOOP_COMPRESSION_RATIO = 3.5
+_LOOP_MIN_BYTES = 48  # shorter texts compress unpredictably
+_LOOP_GUARD_LADDER = (
+    {"no_repeat_ngram_size": 3},
+    {"no_repeat_ngram_size": 3, "repetition_penalty": 1.15},
+)
+
 
 class Aligner(typing.NamedTuple):
     """The WhisperX alignment model bundled with the data its calls need."""
@@ -471,19 +492,22 @@ def _concat_pad(head, tail):
     return np.concatenate([head, pad, tail])
 
 
-def _decode_span(model, window_audio, language) -> str:
+def _decode_span(model, window_audio, language, option_overrides=None) -> str:
     """Decode one audio window without timestamps; return its plain text.
 
     The window is decoded as a single chunk; the model's options are restored
     afterwards so this never leaks state into the main transcribe pass.
+    ``option_overrides`` patches the decode options for this call only -- the
+    loop guard uses it to add repetition constraints.
     """
     from dataclasses import replace  # noqa: PLC0415
 
     duration = len(window_audio) / SAMPLE_RATE
     one_chunk = [{"start": 0.0, "end": duration, "segments": [(0.0, duration)]}]
     original_options = model.options
-    if original_options.without_timestamps is not True:
-        model.options = replace(original_options, without_timestamps=True)
+    model.options = replace(
+        original_options, without_timestamps=True, **(option_overrides or {})
+    )
     try:
         with use_precomputed_chunks(one_chunk):
             result = model.transcribe(
@@ -688,6 +712,45 @@ def apply_collapse_repairs(candidates, segments, aligner):
     return segments
 
 
+def _compression_ratio(text: str) -> float:
+    data = text.encode("utf-8")
+    if len(data) < _LOOP_MIN_BYTES:
+        return 0.0
+    return len(data) / len(zlib.compress(data))
+
+
+def _is_looped(text: str) -> bool:
+    return _compression_ratio(text) > _LOOP_COMPRESSION_RATIO
+
+
+def repair_looped_segments(model, audio, segments, language):
+    """Re-decode every segment whose text is a decoder loop.
+
+    Each retry walks :data:`_LOOP_GUARD_LADDER` until the text stops looping;
+    a retry that still loops (or empties the window) is discarded, so the guard
+    can never make a segment worse than the plain decode.
+    """
+    for segment in segments:
+        text = (segment.get("text") or "").strip()
+        if not _is_looped(text):
+            continue
+        start, end = float(segment["start"]), float(segment["end"])
+        window = audio[int(start * SAMPLE_RATE) : int(end * SAMPLE_RATE)]
+        for guard in _LOOP_GUARD_LADDER:
+            retry = _decode_span(model, window, language, guard)
+            if not retry or _is_looped(retry):
+                continue
+            logging.info(
+                "Repaired looped window at %.1fs: %d -> %d words",
+                start,
+                _word_count(text),
+                _word_count(retry),
+            )
+            segment["text"] = retry
+            break
+    return segments
+
+
 def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
     patch_speechbrain_lazy_imports()
     configure_torch_serialization()
@@ -699,7 +762,7 @@ def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
     compute_type = "float16" if device == "cuda" else "int8"
     with allow_unsafe_torch_load(), intercept_hf_downloads("WhisperX model"):
         model = whisperx.load_model(
-            "large-v3",
+            "large-v3-turbo",
             device,
             compute_type=compute_type,
             vad_method="pyannote",
@@ -742,6 +805,9 @@ def transcribe_with_whisperx(audio_path: str, log_level: str = "info"):
         progress_tracker.ensure_minimum(0.5)
     segments = result.get("segments", [])
     detected_language = result.get("language", detected_language)
+    segments = repair_looped_segments(
+        model, compacted_audio, segments, detected_language
+    )
 
     with (
         allow_unsafe_torch_load(),

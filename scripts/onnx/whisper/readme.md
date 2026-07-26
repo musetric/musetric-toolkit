@@ -1,6 +1,6 @@
-# Whisper large-v3 → word-timestamped ONNX (q4)
+# Whisper large-v3-turbo → word-timestamped ONNX (q4)
 
-Exports **openai/whisper-large-v3** to the [transformers.js][tjs] ONNX layout
+Exports **openai/whisper-large-v3-turbo** to the [transformers.js][tjs] ONNX layout
 with the cross-attention **alignment heads** baked into `generation_config.json`,
 so the decoder emits word-level timestamps. Quantized to **q4** and published to
 Hugging Face for the `@musetric/ai` (`packages/ai`) WebGPU runtime.
@@ -27,14 +27,14 @@ that outputs cross-attentions; the task is left as `auto` (whisper resolves to
 PYTHONPATH=scripts/onnx uv run --no-project --python 3.11 \
   --with-requirements scripts/onnx/whisper/requirements.txt \
   python -m whisper.convert \
-  --model_id openai/whisper-large-v3 \
+  --model_id openai/whisper-large-v3-turbo \
   --quantize --modes q4 \
   --output_attentions \
   --skip_validation \
   --output_parent_dir tmp/whisper-export
 ```
 
-Output lands in `tmp/whisper-export/openai/whisper-large-v3/` with fp32 and q4
+Output lands in `tmp/whisper-export/openai/whisper-large-v3-turbo/` with fp32 and q4
 graphs under `onnx/` plus the tokenizer/config JSON. The runtime uses only:
 
 ```
@@ -44,7 +44,7 @@ added_tokens.json  special_tokens_map.json  normalizer.json
 onnx/encoder_model_q4.onnx  onnx/decoder_model_merged_q4.onnx
 ```
 
-`stage_whisper.py` copies exactly those into `deps/whisper-large-v3-onnx/`
+`stage_whisper.py` copies exactly those into `deps/whisper-large-v3-turbo-onnx/`
 (the local publish repo).
 
 ## Publish
@@ -71,12 +71,12 @@ Hugging Face no-reply address. To make the author match the committer (your git
 email), publish over git instead:
 
 ```bash
-cd deps/whisper-large-v3-onnx
+cd deps/whisper-large-v3-turbo-onnx
 git init -b main && git lfs install --local && git lfs track "*.onnx"
 git add -A
 git -c user.name="Your Name" -c user.email="you@example.com" \
-  commit -m "Whisper large-v3 word-timestamped ONNX (q4, flat)"
-git remote add origin https://huggingface.co/musetric/whisper-large-v3-onnx
+  commit -m "Whisper large-v3-turbo word-timestamped ONNX (q4, flat)"
+git remote add origin https://huggingface.co/musetric/whisper-large-v3-turbo-onnx
 git push -f origin main   # auth via the token from `hf auth login`
 ```
 

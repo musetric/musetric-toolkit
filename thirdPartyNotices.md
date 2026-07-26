@@ -163,10 +163,10 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## OpenAI Whisper - Systran/faster-whisper-large-v3
+## OpenAI Whisper - mobiuslabsgmbh/faster-whisper-large-v3-turbo
 
-- Source: https://huggingface.co/Systran/faster-whisper-large-v3
-- Usage: base speech-to-text weights behind `musetric-transcribe`. WhisperX loads `large-v3` through faster-whisper, which downloads this CTranslate2 conversion of `openai/whisper-large-v3` at runtime.
+- Source: https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
+- Usage: base speech-to-text weights behind `musetric-transcribe`. WhisperX loads `large-v3-turbo` through faster-whisper, which downloads this CTranslate2 conversion of `openai/whisper-large-v3-turbo` at runtime.
 - Local files: `musetric_toolkit/transcribe_audio/whisperx_runner.py`.
 - License: MIT.
 - License source: Hugging Face model card metadata.
@@ -174,7 +174,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Upstream is inconsistent about the Whisper license and it is worth knowing: the
 https://github.com/openai/whisper repository states that "Whisper's code and
 model weights are released under the MIT License", while the
-https://huggingface.co/openai/whisper-large-v3 model card declares `apache-2.0`.
+https://huggingface.co/openai/whisper-large-v3-turbo model card declares `apache-2.0`.
 This notice follows the source the weights are downloaded from, which declares
 MIT. The ONNX re-export used by the `musetric` web runtime is fetched from the
 `apache-2.0` model card instead and is documented as Apache-2.0 there.
@@ -182,7 +182,7 @@ MIT. The ONNX re-export used by the `musetric` web runtime is fetched from the
 ## Transformers.js
 
 - Source: https://github.com/huggingface/transformers.js
-- Usage: vendored ONNX conversion scripts (`scripts/convert.py`, `scripts/quantize.py`, `scripts/extra/whisper.py`) used to export Whisper large-v3 to the transformers.js ONNX layout with cross-attention alignment heads. Only the whisper code path is exercised.
+- Usage: vendored ONNX conversion scripts (`scripts/convert.py`, `scripts/quantize.py`, `scripts/extra/whisper.py`) used to export Whisper to the transformers.js ONNX layout with cross-attention alignment heads. Only the whisper code path is exercised.
 - Local files: `scripts/onnx/whisper/convert.py`, `scripts/onnx/whisper/quantize.py`, `scripts/onnx/whisper/extra/whisper.py`.
 - License: Apache-2.0.
 - License source: upstream `LICENSE`.
