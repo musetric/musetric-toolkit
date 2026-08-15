@@ -269,12 +269,14 @@ class MDXNetSeparator:
         peak = np.abs(mixture).max()
         if peak == 0:
             raise RuntimeError("Input audio appears to be silent.")
-        mixture = utils.normalize(mixture, max_peak=0.9, min_peak=0.0)
+        mixture = mixture / peak
 
-        primary_source = self._demix(mixture) * peak
-        primary_source = utils.match_array_shapes(primary_source, mixture)
-        secondary_source = mixture - (primary_source * self.compensate)
-        secondary_source = utils.match_array_shapes(secondary_source, mixture)
+        primary = utils.match_array_shapes(self._demix(mixture), mixture)
+        secondary = utils.match_array_shapes(
+            mixture - (primary * self.compensate), mixture
+        )
+        primary_source = primary * peak
+        secondary_source = secondary * peak
 
         primary_time = utils.normalize(primary_source, max_peak=0.9, min_peak=0.0).T
         secondary_time = utils.normalize(secondary_source, max_peak=0.9, min_peak=0.0).T
