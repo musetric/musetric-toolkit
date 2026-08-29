@@ -48,11 +48,27 @@ a graph that returns wrong-length output for any track whose window count
 differs from the traced one. Run the exported graph at several input lengths and
 diff the shapes.
 
+## Split does not compile on Adreno
+
+onnxruntime's WebGPU `Split` kernel fails to build a compute pipeline on
+Adreno. On a Galaxy S24 the graph loses its very first `Split` with
+`CreateComputePipelines failed with VK_ERROR_UNKNOWN`, onnxruntime drops the
+session to the CPU provider, and the tracker still returns beats — just far
+slower, with nothing in the log naming the cause. This is a shader that will
+not compile, not a binding too large, so nothing about tensor sizes helps.
+
+`split_to_slice_webgpu.py` lowers every fixed-size `Split` into one static
+`Slice` per output: it reads the sizes off the `Constant` feeding the node and
+writes them as `starts`/`ends`/`axes` initializers. Same partition of the same
+axis, no weight read, three initializers added per output. Run it on the export
+before validating, so every later step sees the graph that ships.
+
 ## Files
 
 | script | role |
 |---|---|
 | `export_beat_this.py` | build the graph, write `beat_this.onnx`, `mel-filterbank.bin` + `config.json` |
+| `split_to_slice_webgpu.py` | lower fixed-size `Split` into static `Slice` so the graph compiles on Adreno |
 | `validate_beat_this.py` | beat/downbeat time agreement of the ONNX vs the torch `File2Beats` reference |
 | `dump_reference_mel.py` | dump reference waveforms + log-mels, the parity gate for the runtime's WebGPU front end |
 | `stage_beat_this.py` | copy the file set into the publish folder |
@@ -68,6 +84,9 @@ The export reuses the main toolkit env (it imports `beat_this`) plus the
 ```sh
 uv run --group export python scripts/onnx/beat_this/export_beat_this.py \
   --out <export-dir> --models-path <checkpoint-cache-dir>
+
+uv run --group export python scripts/onnx/beat_this/split_to_slice_webgpu.py \
+  --input <export-dir>/beat_this.onnx --output <export-dir>/beat_this.onnx
 
 uv run --group export python scripts/onnx/beat_this/validate_beat_this.py \
   --onnx <export-dir>/beat_this.onnx --audio <audio-dir> \
