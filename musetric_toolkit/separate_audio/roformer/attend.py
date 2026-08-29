@@ -46,6 +46,8 @@ class Attend(nn.Module):
         self.dropout = dropout
         self.attn_dropout = nn.Dropout(dropout)
         self.flash = flash
+        # 0 = off. Export-only knob; see the matmul path in forward().
+        self.q_block = 0
 
     def flash_attn(self, q, k, v):
         backends = [
@@ -72,6 +74,23 @@ class Attend(nn.Module):
         # attention fusions match; einsum coverage on DirectML/CoreML is spotty.
         # sim = q @ kᵀ ; out = attn @ v  (math-identical to the einsum path).
         scale = q.shape[-1] ** -0.5
+
+        # q_block splits the QUERY axis, not the key axis, so no online softmax is
+        # needed: softmax normalizes each query row over the full key axis on its
+        # own, and the rows of a block never see the other blocks. The result is
+        # the same values, computed with a peak score tensor of [b,h,q_block,n]
+        # instead of [b,h,n,n]. For the time-attention layers of this model that
+        # is 480*q_block*n*2 bytes instead of 480*n²*2 — the difference between
+        # fitting in a mobile storage buffer and not. Costs the same FLOPs.
+        if self.q_block and q.shape[-2] > self.q_block:
+            outputs = []
+            for start in range(0, q.shape[-2], self.q_block):
+                q_part = q[..., start : start + self.q_block, :]
+                sim = torch.matmul(q_part, k.transpose(-1, -2)) * scale
+                attn = self.attn_dropout(sim.softmax(dim=-1))
+                outputs.append(torch.matmul(attn, v))
+            return torch.cat(outputs, dim=-2)
+
         sim = torch.matmul(q, k.transpose(-1, -2)) * scale
         attn = self.attn_dropout(sim.softmax(dim=-1))
         return torch.matmul(attn, v)
