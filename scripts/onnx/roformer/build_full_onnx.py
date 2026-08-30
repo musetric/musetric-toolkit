@@ -36,11 +36,31 @@ WIN = 2048
 HEADS = 8
 HEAD_DIM = 64
 HIDDEN = HEADS * HEAD_DIM  # 512
-T = 501  # default frame count; override with --frames (mirrors export_chunk.py)
+T = 1101  # default frame count, the published window; override with --frames
 TSAMP = HOP * (T - 1)  # 220500
 PAD = N_FFT // 2  # 1024
 FREQS = N_FFT // 2 + 1  # 1025
 PACKED = FREQS * 2  # 2050
+# RMSNorm epsilon. The model's RMSNorm is F.normalize(x, dim=-1) =
+# x/max(||x||_2, 1e-12), so the ONNX form x/sqrt(mean(x^2)+eps) wants the smallest
+# epsilon it can carry: at 1e-6 every row whose per-element rms is below ~0.03 is
+# corrupted and those rows exist (band-split / early features), which measured
+# ~10 dB end-to-end.
+RMSNORM_EPS = 1e-12
+# ... but 1e-12 is only usable while the node computes in fp32. A WebGPU kernel
+# normalizes by the reciprocal 1/sqrt(mean(x^2)+eps) and casts it to the tensor
+# dtype, so with fp16 tensors any row whose mean(x^2)+eps falls below
+# 1/65504^2 = 2.33e-10 turns that reciprocal into +inf, then 0*inf = NaN for the
+# whole row, and the attention softmax spreads the NaN over the entire time axis.
+# The bound does not depend on the data: 1/sqrt(eps) alone has to stay inside
+# fp16. Measured with a one-node fp16 graph on a WebGPU adapter: whole-row NaN at
+# eps <= 2.0e-10, clean from 2.4e-10 up. 1e-9 leaves the reciprocal a 2x margin
+# and costs nothing measurable - core parity against torch fp32 on a real chunk is
+# 45.68 dB at 1e-9 against 45.70 dB at 1e-12, while 1e-8 drops to 43.88 dB and
+# 1e-7 to 38.86 dB, past the 40 dB gate. Anything near the 1e-4 a device-side
+# patch first used is far outside it.
+RMSNORM_EPS_FP16 = 1e-9
+FP16_RSQRT_FLOOR = 1.0 / 65504.0**2  # 2.33e-10
 
 
 def hann_periodic() -> np.ndarray:
@@ -147,6 +167,24 @@ class FullSeparator(nn.Module):
         return self.apply_mask_istft(stft_repr, masks)
 
 
+def set_attention_block(model: MelBandRoformer, q_block: int) -> int:
+    """Split the query axis of every attention layer into q_block-row chunks.
+
+    Exact, not an approximation — see Attend.forward. The point is the peak score
+    tensor: this model's six time-attention layers otherwise allocate
+    [60, 8, T, T] fp16, which is 230 MiB at T=501 and 1110 MiB at T=1101, past
+    what a mobile WebGPU storage buffer will bind. The six band-attention layers
+    are [T, 8, 60, 60] and were never the problem, so blocking skips them (their
+    sequence is 60, below any sensible block).
+    """
+    count = 0
+    for m in model.modules():
+        if isinstance(m, Attend):
+            m.q_block = q_block
+            count += 1
+    return count
+
+
 def load_model(checkpoint: Path, config: Path) -> MelBandRoformer:
     with open(config) as f:
         cfg = dict_to_namespace(yaml.load(f, Loader=yaml.FullLoader))  # noqa: S506
@@ -191,7 +229,10 @@ def main() -> None:
         type=int,
         default=T,
         help="chunk frame count T (STFT/iSTFT weights are T-independent; only "
-        "TSAMP and the static shapes change). Default 501.",
+        "TSAMP and the static shapes change). The default is the full reference "
+        "context the published core uses; a shorter window halves the activation "
+        "footprint but loses separation context, measuring ~24 dB at T=501 "
+        "against the same track at the default.",
     )
     p.add_argument(
         "--skip-gate",
@@ -206,21 +247,42 @@ def main() -> None:
         "compare quality/perf/VRAM vs the mixed fp16 build.",
     )
     p.add_argument(
-        "--fuse",
+        "--fuse-rmsnorm",
         action="store_true",
-        help="production fusion on the fp32 graph before fp16 conversion: erf-gelu "
-        "-> FastGelu, RMSNorm -> RMSNormalization, and the attention core -> "
-        "MultiHeadAttention (flash, no T² sim -> removes the VRAM cliff, unblocks "
-        "larger T). All WebGPU kernels; cuts dispatch count + boundary Casts.",
+        help="fuse only the RMSNorm chains to ai.onnx RMSNormalization, leaving "
+        "attention alone so --attn-block survives. Unlike the hand-lowered chain, "
+        "the WebGPU kernel for this op casts to f32 inside the shader and "
+        "accumulates the sum of squares there, so it needs no fp32 island and no "
+        "giant cast copies: fp16 in, fp16 out, f32 where it matters.",
+    )
+    p.add_argument(
+        "--all-fp16",
+        action="store_true",
+        help="convert everything except graph IO to fp16, including the RMSNorm "
+        "islands and Softmax that are normally pinned to fp32. Those pins cost "
+        "nothing at T=501 but at T=1101 they turn the [T,60,1536] activations "
+        "into 387 MiB fp32 tensors plus a cast copy each, which is far past what "
+        "an Adreno storage buffer addresses. RMSNormalization then carries "
+        f"epsilon={RMSNORM_EPS_FP16:g} instead of {RMSNORM_EPS:g}, which is what "
+        "keeps its fp16 reciprocal finite; check parity before trusting the rest, "
+        "mean(x^2) can still overflow fp16 in the unfused chain.",
+    )
+    p.add_argument(
+        "--attn-block",
+        type=int,
+        default=0,
+        help="split attention over the query axis into chunks of this many rows "
+        "(0 = off). Exact, same FLOPs; it only caps the peak score tensor at "
+        "[60,8,block,T] instead of [60,8,T,T], which is what mobile WebGPU "
+        "storage buffers cannot bind.",
     )
     p.add_argument(
         "--core-only",
         action="store_true",
         help="export the web core (stft_repr -> per-bin masks), NOT the full "
-        "STFT/iSTFT "
-        "graph. Produces the web-backend core (syhft_core_fused_fp16_webgpu.onnx) "
-        "that onnxruntime-web runs with @musetric/fft host-side DSP. The model "
-        "bakes the mel-band gather/average tables into the graph.",
+        "STFT/iSTFT graph. Produces the published core that onnxruntime-web runs "
+        "with @musetric/fft host-side DSP. The model bakes the mel-band "
+        "gather/average tables into the graph.",
     )
     args = p.parse_args()
 
@@ -229,6 +291,14 @@ def main() -> None:
     print(f"frames T={T}  TSAMP={TSAMP}  (~{TSAMP / 44100:.1f}s @44.1k)")
 
     model = load_model(args.checkpoint, args.config)
+    if args.attn_block:
+        n = set_attention_block(model, args.attn_block)
+        peak = 60 * 8 * args.attn_block * T * 2
+        print(
+            f"attention blocked at {args.attn_block} query rows over {n} layers; "
+            f"peak time-attention score tensor {peak / 1048576:.1f} MiB "
+            f"(was {60 * 8 * T * T * 2 / 1048576:.1f} MiB)"
+        )
     # warm RotaryEmbedding cache at T (decode path mutates it on first call)
     with torch.no_grad():
         model.net_forward(torch.randn(1, PACKED, T, 2))
@@ -240,7 +310,14 @@ def main() -> None:
             return
         if args.output is None:
             raise SystemExit("--output required for export")
-        export(net, args.output, fp32=args.fp32, fuse=args.fuse, core_only=True)
+        export(
+            net,
+            args.output,
+            fp32=args.fp32,
+            all_fp16=args.all_fp16,
+            fuse_rmsnorm_only=args.fuse_rmsnorm,
+            core_only=True,
+        )
         return
 
     full = FullSeparator(model).eval()
@@ -251,7 +328,13 @@ def main() -> None:
         return
     if args.output is None:
         raise SystemExit("--output required for export")
-    export(full, args.output, fp32=args.fp32, fuse=args.fuse)
+    export(
+        full,
+        args.output,
+        fp32=args.fp32,
+        all_fp16=args.all_fp16,
+        fuse_rmsnorm_only=args.fuse_rmsnorm,
+    )
 
 
 class Core(nn.Module):
@@ -298,16 +381,19 @@ class Core(nn.Module):
         return (summed / self.denom).float()
 
 
-def export(  # noqa: C901, PLR0912, PLR0915
+def export(  # noqa: C901, PLR0913, PLR0915
     full: nn.Module,
     output: Path,
     fp32: bool = False,
-    fuse: bool = False,
+    all_fp16: bool = False,
+    fuse_rmsnorm_only: bool = False,
     core_only: bool = False,
 ) -> None:
     import time  # noqa: PLC0415
     from collections import Counter  # noqa: PLC0415
 
+    # --all-fp16 is the only mode that leaves the normalization in fp16.
+    rms_eps = RMSNORM_EPS_FP16 if all_fp16 and not fp32 else RMSNORM_EPS
     output.parent.mkdir(parents=True, exist_ok=True)
     raw = output.with_name(f"{output.stem}_raw.onnx")
     if core_only:
@@ -349,33 +435,15 @@ def export(  # noqa: C901, PLR0912, PLR0915
         if native in counts:
             raise RuntimeError(f"{native} op present - DSP did not lower to conv")
 
-    if fuse:
-        ng = fuse_gelu(proto.graph)
-        nn_ = fuse_rmsnorm(proto.graph)
-        na = fuse_attention(proto.graph)
-        _ensure_ms_opset(proto)
-        if nn_:
-            # RMSNormalization is opset 23; bump the onnx (default) domain import.
-            # This bump pushes ConvTranspose (iSTFT) + Cos/Sin to the CPU on the
-            # WebGPU EP — which is FINE/FASTER: measured WebGPU ConvTranspose for the
-            # 2048-kernel iSTFT shape = 200 ms vs CPU 88 ms (2.3x slower on WebGPU),
-            # so the CPU fallback is the better placement. (Tried fusing RMSNorm to
-            # opset-1 LpNormalization to keep the iSTFT on WebGPU — net SLOWER, both
-            # T=501 and T=1101. Do not re-try; see results-log §iSTFT.)
-            for op in proto.opset_import:
-                if op.domain in ("", "ai.onnx") and op.version < 23:  # noqa: PLR2004
-                    op.version = 23
+    if fuse_rmsnorm_only:
+        n = fuse_rmsnorm(proto.graph, rms_eps)
+        for op in proto.opset_import:
+            if op.domain in ("", "ai.onnx") and op.version < 23:  # noqa: PLR2004
+                op.version = 23
         onnx.checker.check_model(proto, full_check=False)
-        post = Counter(n.op_type for n in proto.graph.node)
         print(
-            f"  fused {ng} gelu -> FastGelu, {nn_} RMSNorm -> RMSNormalization, "
-            f"{na} attention -> MultiHeadAttention"
-        )
-        print(
-            f"  post-fuse: FastGelu={post.get('FastGelu', 0)} "
-            f"RMSNormalization={post.get('RMSNormalization', 0)} "
-            f"MultiHeadAttention={post.get('MultiHeadAttention', 0)} "
-            f"Softmax={post.get('Softmax', 0)} Erf={post.get('Erf', 0)}"
+            f"  fused {n} RMSNorm chains -> RMSNormalization "
+            f"(fp16 IO, f32 inside, epsilon={rms_eps:g})"
         )
 
     if fp32:
@@ -396,26 +464,34 @@ def export(  # noqa: C901, PLR0912, PLR0915
         # RMSNormalization (the fused replacement) also stays fp32: its eps=1e-12
         # underflows in fp16 (small/zero rows -> 0/0 NaN), and fp32 IO is ~free on
         # this memory-bound graph (per-chunk unchanged). See fuse_rmsnorm's note.
-        extra_block = [
-            "Softmax",
-            "ReduceL2",
-            "Clip",
-            "Div",
-            "Conv",
-            "ConvTranspose",
-            "Pad",
-            "RMSNormalization",
-        ]
+        extra_block = (
+            ["Conv", "ConvTranspose", "Pad"]
+            if all_fp16
+            else [
+                "Softmax",
+                "ReduceL2",
+                "Clip",
+                "Div",
+                "Conv",
+                "ConvTranspose",
+                "Pad",
+                "RMSNormalization",
+            ]
+        )
         op_block = list(dict.fromkeys([*float16.DEFAULT_OP_BLOCK_LIST, *extra_block]))
         print(f"converting to FP16 (keep_io_types, block += {extra_block}) ...")
         model16 = float16.convert_float_to_float16(
-            proto, keep_io_types=True, disable_shape_infer=True, op_block_list=op_block
+            proto,
+            keep_io_types=True,
+            disable_shape_infer=True,
+            op_block_list=op_block,
         )
         del proto
         gc.collect()
 
         if core_only:
             ensure_float32_outputs(model16)
+        assert_fp16_epsilon_safe(model16)
         save_fp16(model16, output)
         reloaded = onnx.load(str(output))
         nfix = sanitize_fp16_initializers(reloaded)
@@ -479,79 +555,32 @@ def _ensure_ms_opset(model) -> None:
         model.opset_import.append(onnx.helper.make_opsetid("com.microsoft", 1))
 
 
-def fuse_gelu(graph) -> int:
-    """erf-gelu chain -> com.microsoft FastGelu. Pattern (fp32, no casts):
-    z -> Div(z, sqrt2) -> Erf -> Add(., 1) -> Mul(., 0.5) -> Mul(., z).
-
-    NOTE: FastGelu is the tanh approximation, not the exact erf GELU the model
-    uses. Measured: swapping it for the exact ONNX Gelu(approximate="none") (also
-    a WebGPU kernel) leaves parity vs torch UNCHANGED (45.64 -> 45.67 dB). The
-    ~45 dB floor is fp16 quantization (~-45 dB) + MHA-flash vs torch attention
-    (~-47 dB), not the gelu approximation — so FastGelu stays (no reason to churn).
-    """
-    import onnx  # noqa: PLC0415
-
-    producer, consumers = _io_maps(graph)
-    remove: set = set()
-    replace_at: dict = {}
-    count = 0
-    for erf in [n for n in graph.node if n.op_type == "Erf"]:
-        div = producer.get(erf.input[0])
-        if div is None or div.op_type != "Div":
-            continue
-        z = div.input[0]
-        add1 = _sole_consumer(consumers, erf.output[0])
-        if add1 is None or add1.op_type != "Add":
-            continue
-        mul_half = _sole_consumer(consumers, add1.output[0])
-        if mul_half is None or mul_half.op_type != "Mul":
-            continue
-        mul_z = _sole_consumer(consumers, mul_half.output[0])
-        if mul_z is None or mul_z.op_type != "Mul":
-            continue
-        if z not in mul_z.input:
-            continue
-        fg = onnx.helper.make_node(
-            "FastGelu",
-            [z],
-            [mul_z.output[0]],
-            domain="com.microsoft",
-            name=f"FastGelu_{count}",
-        )
-        replace_at[div.name] = fg
-        remove.update({div.name, erf.name, add1.name, mul_half.name, mul_z.name})
-        count += 1
-    if count:
-        _rewrite_nodes(graph, remove, replace_at)
-    return count
-
-
-def fuse_rmsnorm(graph) -> int:
+def fuse_rmsnorm(graph, epsilon: float) -> int:
     """RMSNorm chain -> standard ONNX RMSNormalization (opset 23, WebGPU kernel,
-    fp32-internal accumulation so the fp16 ReduceL2-overflow problem is gone).
-    Pattern (fp32): x -> ReduceL2(x) -> Clip(min=eps) -> Expand -> Div(x, .) ->
-    Mul(sqrt_dim const) -> Mul(gamma). RMSNormalization(X, scale) = X /
-    sqrt(mean(X^2)+eps) * scale, so scale = gamma and the sqrt_dim factor folds
-    away (mean vs sum). Caller bumps the onnx opset import to 23.
+        fp32-internal accumulation so the fp16 ReduceL2-overflow problem is gone).
+        Pattern (fp32): x -> ReduceL2(x) -> Clip(min=eps) -> Expand -> Div(x, .) ->
+        Mul(sqrt_dim const) -> Mul(gamma). RMSNormalization(X, scale) = X /
+        sqrt(mean(X^2)+eps) * scale, so scale = gamma and the sqrt_dim factor folds
+        away (mean vs sum). Caller bumps the onnx opset import to 23.
 
-    epsilon=1e-12 (NOT 1e-6): the model's RMSNorm is F.normalize(x, dim=-1) =
-    x/max(||x||_2, 1e-12), i.e. a tiny floor on the L2 norm. RMSNormalization adds
-    epsilon to mean(x^2) instead, so for a row with per-element rms r the denom is
-    sqrt(r^2 + eps). With eps=1e-6 any row with r <~ 0.03 is corrupted (denom off
-    by up to sqrt(2)); such small-magnitude rows DO occur (BandSplit / early
-    features) and cost ~10 dB end-to-end (measured: isolated RMSNorm 24 dB vs 139
-    dB; full graph fp32 48 -> 57 dB). 1e-12 matches F.normalize. NOTE: 1e-12
-    underflows in fp16 (-> 0/0 NaN), so this node must stay fp32 in the fp16
-    conversion (it is in export()'s op_block_list); RMSNormalization accumulates
-    the reduction in fp32 internally regardless, so keeping fp32 IO is ~free
-    (memory-bound graph; measured per-chunk unchanged, 682 vs 686 ms).
+    epsilon is RMSNORM_EPS (1e-12) while the node stays fp32 and RMSNORM_EPS_FP16
+        (1e-8) once it runs in fp16 — see the constants for why each value, and pass
+        the one that matches how this graph will be converted. Both are far below the
+        1e-6 that corrupts every row with per-element rms <~ 0.03 (~10 dB end-to-end:
+        isolated RMSNorm 24 dB vs 139 dB; full graph fp32 48 -> 57 dB).
 
-    NOTE: the opset-23 bump pushes ConvTranspose (iSTFT) + Cos/Sin to the CPU on
-    the WebGPU EP — accepted on purpose: WebGPU ConvTranspose for the 2048-kernel
-    iSTFT measured 200 ms vs CPU 88 ms (2.3x slower on GPU). Fusing instead to
-    opset-1 LpNormalization (to keep the iSTFT on WebGPU) was tried and is net
-    SLOWER. com.microsoft SkipSimplifiedLayerNormalization needs a full-shape skip;
-    SimplifiedLayerNormalization is not a registered op. RMSNormalization stays.
+        The default export keeps the node fp32 (it is in export()'s op_block_list),
+        which costs nothing on this memory-bound graph — RMSNormalization accumulates
+        the reduction in fp32 internally regardless, and per-chunk time is unchanged
+        (682 vs 686 ms). --all-fp16 drops that pin to keep the [T,60,1536] activations
+        out of fp32, and then the epsilon is what has to change.
+
+        NOTE: the opset-23 bump pushes ConvTranspose (iSTFT) + Cos/Sin to the CPU on
+        the WebGPU EP — accepted on purpose: WebGPU ConvTranspose for the 2048-kernel
+        iSTFT measured 200 ms vs CPU 88 ms (2.3x slower on GPU). Fusing instead to
+        opset-1 LpNormalization (to keep the iSTFT on WebGPU) was tried and is net
+        SLOWER. com.microsoft SkipSimplifiedLayerNormalization needs a full-shape skip;
+        SimplifiedLayerNormalization is not a registered op. RMSNormalization stays.
     """
     import onnx  # noqa: PLC0415
 
@@ -586,127 +615,12 @@ def fuse_rmsnorm(graph) -> int:
             [mul2.output[0]],
             name=f"RMSNorm_{count}",
             axis=-1,
-            epsilon=1e-12,
+            epsilon=epsilon,
         )
         replace_at[red.name] = rms
         remove.update(
             {red.name, clip.name, expand.name, div.name, mul1.name, mul2.name}
         )
-        count += 1
-    if count:
-        _rewrite_nodes(graph, remove, replace_at)
-    return count
-
-
-def fuse_attention(graph) -> int:
-    """Attention core MatMul(q,kᵀ) -> Mul(scale) -> Softmax -> MatMul(.,v) ->
-    com.microsoft MultiHeadAttention (flash-style WebGPU kernel: no T² sim
-    materialization -> removes the VRAM paging cliff, unblocking larger T).
-
-    The model runs attention in [b,h,n,d] (BNSH) with a per-head sigmoid gate
-    after it; MHA is BSD [b,n,hidden]. Convert q/k/v BNSH->BSD on the way in, run
-    MHA, convert its output BSD->BNSH (output name kept = old matmul output), and
-    leave the existing gating + to_out untouched. Rotary stays applied to q/k.
-    """
-    import onnx  # noqa: PLC0415
-    from onnx import numpy_helper  # noqa: PLC0415
-
-    producer, consumers = _io_maps(graph)
-    inits = {t.name: t for t in graph.initializer}
-    bsd_shape, bnhd_shape, have_shapes = "mha_bsd_shape", "mha_bnhd_shape", False
-    remove: set = set()
-    replace_at: dict = {}
-    count = 0
-    for sm in [n for n in graph.node if n.op_type == "Softmax"]:
-        mul_scale = producer.get(sm.input[0])
-        if mul_scale is None or mul_scale.op_type != "Mul":
-            continue
-        sim = producer.get(mul_scale.input[0])
-        if sim is None or sim.op_type != "MatMul":
-            continue
-        q = sim.input[0]
-        k_t = producer.get(sim.input[1])
-        if k_t is None or k_t.op_type != "Transpose":
-            continue
-        k = k_t.input[0]
-        matmul2 = _sole_consumer(consumers, sm.output[0])
-        if matmul2 is None or matmul2.op_type != "MatMul":
-            continue
-        v = matmul2.input[1]
-        attn_out = matmul2.output[0]
-        scale_name = next((i for i in mul_scale.input if i in inits), None)
-        if scale_name is None:
-            continue
-        scale_val = float(numpy_helper.to_array(inits[scale_name]).reshape(-1)[0])
-
-        if not have_shapes:
-            # batch is packed (b*freq or b*time, not 1) -> leading 0 = "keep the
-            # input's batch dim" (Reshape allowzero=0 default); -1 infers seq.
-            graph.initializer.append(
-                numpy_helper.from_array(
-                    np.array([0, -1, HIDDEN], dtype=np.int64), bsd_shape
-                )
-            )
-            graph.initializer.append(
-                numpy_helper.from_array(
-                    np.array([0, -1, HEADS, HEAD_DIM], dtype=np.int64), bnhd_shape
-                )
-            )
-            have_shapes = True
-
-        p = f"mha{count}"
-        nodes = []
-        bsd = {}
-        for tag, t in (("q", q), ("k", k), ("v", v)):
-            nodes.append(
-                onnx.helper.make_node(
-                    "Transpose",
-                    [t],
-                    [f"{p}_{tag}_bnhd"],
-                    name=f"{p}_{tag}_tr",
-                    perm=[0, 2, 1, 3],
-                )
-            )
-            nodes.append(
-                onnx.helper.make_node(
-                    "Reshape",
-                    [f"{p}_{tag}_bnhd", bsd_shape],
-                    [f"{p}_{tag}_bsd"],
-                    name=f"{p}_{tag}_rs",
-                )
-            )
-            bsd[tag] = f"{p}_{tag}_bsd"
-        nodes.append(
-            onnx.helper.make_node(
-                "MultiHeadAttention",
-                [bsd["q"], bsd["k"], bsd["v"]],
-                [f"{p}_out_bsd"],
-                name=f"{p}_mha",
-                domain="com.microsoft",
-                num_heads=HEADS,
-                scale=scale_val,
-            )
-        )
-        nodes.append(
-            onnx.helper.make_node(
-                "Reshape",
-                [f"{p}_out_bsd", bnhd_shape],
-                [f"{p}_out_bnhd"],
-                name=f"{p}_out_rs",
-            )
-        )
-        nodes.append(
-            onnx.helper.make_node(
-                "Transpose",
-                [f"{p}_out_bnhd"],
-                [attn_out],
-                name=f"{p}_out_tr",
-                perm=[0, 2, 1, 3],
-            )
-        )
-
-        replace_at[sim.name] = nodes
-        remove.update({sim.name, mul_scale.name, sm.name, matmul2.name, k_t.name})
         count += 1
     if count:
         _rewrite_nodes(graph, remove, replace_at)
@@ -743,6 +657,37 @@ def sanitize_fp16_initializers(model) -> int:
             a = np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float16)
             t.CopyFrom(numpy_helper.from_array(a, t.name))
     return fixed
+
+
+def assert_fp16_epsilon_safe(model) -> None:
+    """Fail the build if a normalization that ended up in fp16 kept an epsilon the
+    dtype cannot carry through 1/sqrt(mean(x^2)+eps) — the NaN described at
+    RMSNORM_EPS_FP16.
+    """
+    import onnx  # noqa: PLC0415
+
+    graph = model.graph
+    dtypes = {t.name: t.data_type for t in graph.initializer}
+    for value in list(graph.value_info) + list(graph.input) + list(graph.output):
+        dtypes[value.name] = value.type.tensor_type.elem_type
+
+    bad: list[str] = []
+    for node in graph.node:
+        fp16 = any(dtypes.get(n) == onnx.TensorProto.FLOAT16 for n in node.output)
+        if not fp16:
+            continue
+        if node.op_type != "RMSNormalization":
+            continue
+        eps = next((a.f for a in node.attribute if a.name == "epsilon"), None)
+        if eps is not None and eps < FP16_RSQRT_FLOOR:
+            bad.append(f"{node.name or node.op_type}={eps:g}")
+    if bad:
+        raise RuntimeError(
+            f"{len(bad)} fp16 normalization node(s) carry an epsilon below the fp16 "
+            f"reciprocal floor {FP16_RSQRT_FLOOR:g}, which makes every near-zero row "
+            f"NaN on a WebGPU kernel: {', '.join(bad[:4])}"
+            + (" ..." if len(bad) > 4 else "")  # noqa: PLR2004
+        )
 
 
 def ensure_float32_outputs(model) -> int:
