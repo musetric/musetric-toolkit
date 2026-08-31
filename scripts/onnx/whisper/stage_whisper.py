@@ -5,6 +5,11 @@ repo needs only the q4 encoder + merged decoder plus the tokenizer/config JSON.
 This copies exactly that set into `deps/whisper-large-v3-turbo-onnx/` (the folder
 `publish_whisper.py` uploads).
 
+The encoder is checked against `mobile_encoder.verify` on the way through: a
+stock export cannot run on several mobile GPUs and returns wrong answers on
+others, and both faults are silent at runtime. Staging refuses rather than let
+such a graph reach the publish repo.
+
     uv run python scripts/onnx/whisper/stage_whisper.py \
       --export tmp/whisper-export/openai/whisper-large-v3-turbo
 """
@@ -17,8 +22,13 @@ import shutil
 import sys
 from pathlib import Path
 
+import mobile_encoder
+import onnx
+
 with contextlib.suppress(Exception):
     sys.stdout.reconfigure(encoding="utf-8")
+
+ENCODER = "encoder_model_q4.onnx"
 
 # Repo layout: <root>/music/musetric-toolkit/scripts/onnx/whisper/stage_whisper.py
 # and <root>/deps/whisper-large-v3-turbo-onnx — so parents[5] is <root>.
@@ -62,6 +72,16 @@ def main() -> None:
     if missing:
         listing = "\n  ".join(missing)
         raise SystemExit(f"missing exported files under {export}:\n  {listing}")
+
+    encoder = source_path(export, ENCODER)
+    reasons = mobile_encoder.verify(onnx.load(str(encoder)))
+    if reasons:
+        listing = "\n  ".join(reasons)
+        raise SystemExit(
+            f"{encoder} would not run correctly on a mobile GPU:\n  {listing}\n"
+            f"run mobile_encoder.py over it before staging"
+        )
+    print(f"checked {ENCODER}: mobile-safe")
 
     for rel in PUBLISH_FILES:
         source = source_path(export, rel)
