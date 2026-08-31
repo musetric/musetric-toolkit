@@ -47,6 +47,76 @@ onnx/encoder_model_q4.onnx  onnx/decoder_model_merged_q4.onnx
 `stage_whisper.py` copies exactly those into `deps/whisper-large-v3-turbo-onnx/`
 (the local publish repo).
 
+## Make the encoder run on mobile GPUs (required)
+
+Two independent defects stand between the stock export and a phone, and neither
+is in the weights. `mobile_encoder.py` applies all three rewrites in order on a
+single load of the graph, then checks that the result is actually clear:
+
+```bash
+uv run python scripts/onnx/whisper/mobile_encoder.py   --input  tmp/whisper-export/openai/whisper-large-v3-turbo/onnx/encoder_model_q4.onnx   --output tmp/whisper-export/openai/whisper-large-v3-turbo/onnx/encoder_model_q4.onnx
+```
+
+It is idempotent: a second run over an already-prepared graph reports that each
+pass has nothing to do and writes the same bytes. `stage_whisper.py` runs the
+same check before it copies anything, so an encoder that skipped this step
+cannot reach the publish repo.
+
+### The graph is too big to bind
+
+The exported encoder computes each layer's attention in one shot, so its score
+tensor is `(20, 1500, 1500)` fp32 - 171.7 MiB. WebGPU guarantees only 128 MiB
+per storage binding and several mobile adapters offer exactly that minimum, so
+the encoder cannot run there at all; ONNX Runtime fails the `Softmax` dispatch
+with `binding index 1 not present in the bind group layout`.
+
+`block_attention.py` splits the queries into blocks and concatenates the
+per-block outputs. Softmax normalizes each query row over the full key axis on
+its own, so this is exact, not an approximation. The default 250-row block caps
+the score tensor at 28.6 MiB and grows the graph from 1751 to 2423 nodes. No
+weight is touched - the q4 `MatMulNBits` nodes are copied through - and CPU
+output is bit-identical to the unblocked graph. The pass refuses to write a
+graph whose blocks would still exceed the 128 MiB floor.
+
+### The graph computes the wrong answer
+
+The second defect is not a limit but a silent wrong answer. On Adreno 600-series
+adapters the WebGPU `Transpose` returns a quarter of its output as zeros. The
+cause is in the execution provider's shader: it stages the tile in
+`array<array<T, tile_size + 1>, tile_size>` - 16 x 17 f32, 1088 bytes - and on
+that hardware a workgroup array whose size is not a multiple of 512 bytes loses
+the stores of one warp out of four across `workgroupBarrier`. The stores land, a
+thread reads its own slot back correctly, but the other threads do not see them.
+
+Only the shapes that reach that shader are affected: after leading extents of
+one are squeezed away, a rank-2 permutation swapping both axes. In this graph
+that is one node out of 161 - plus both `Conv` nodes, because the provider
+transposes NCHW to NHWC inside them. The full investigation, including the
+one-line fix upstream, is in `plan/ort-webgpu-transpose-adreno660.md`.
+
+`conv_to_matmul.py` writes the convolution as `Pad -> Slice x3 -> Concat ->
+Reshape -> MatMul -> Add -> Reshape` with the weight on the left, so no
+transpose appears at all. `transpose_to_gather.py` replaces the remaining
+affected node with a `Gather` against a precomputed index table - 7.3 MiB of
+int32 for this graph - and leaves the other 160 transposes alone.
+
+Together: 2423 -> 2441 nodes and CPU output unchanged to 9e-5, while the
+affected adapter goes from visibly wrong output to what a healthy one reports.
+
+The index table is static, so the rewrite pins the encoder to batch 1 - which is
+what the runtime feeds anyway, one 30-second window at a time.
+
+### Running a single pass
+
+Each pass is still its own script with the same `--input`/`--output` interface,
+which is what you want when bisecting a graph or trying a different block size:
+
+```bash
+uv run python scripts/onnx/whisper/block_attention.py --input X --output Y --query-block 250
+uv run python scripts/onnx/whisper/conv_to_matmul.py --input X --output Y
+uv run python scripts/onnx/whisper/transpose_to_gather.py --input X --output Y
+```
+
 ## Publish
 
 `publish_whisper.py` verifies the staged files, prints a sha256 manifest,
