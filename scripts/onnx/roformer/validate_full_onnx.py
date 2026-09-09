@@ -20,6 +20,21 @@ from musetric_toolkit.separate_audio.ffmpeg.read import read_audio_file
 from musetric_toolkit.separate_audio.roformer.attend import Attend
 
 
+def loudest_window(mix: np.ndarray, length: int) -> int:
+    """Offset of the highest-energy window of `length` samples.
+
+    The file start is the wrong window to validate on. Normalization scales the
+    whole track by its global peak, so a quiet intro stays quiet after it, and
+    comparing two models over near-silence measures rounding noise instead of
+    separation: two cores that score 57.9 dB against torch on the loudest window
+    of a track both score 3.6 dB on its opening window, and agree to the digit
+    there whatever they do elsewhere.
+    """
+    power = (mix**2).mean(axis=0)
+    total = np.concatenate(([0.0], np.cumsum(power, dtype=np.float64)))
+    return int(np.argmax(total[length:] - total[:-length]))
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", required=True, type=Path)
@@ -51,8 +66,10 @@ def main() -> None:
     mix = utils.normalize(
         read_audio_file(str(args.source), 44100, 2), max_peak=0.9, min_peak=0.0
     )  # [2, samples]
-    chunk = np.ascontiguousarray(mix[:, :TSAMP], dtype=np.float32)  # [2, TSAMP]
+    start = loudest_window(mix, TSAMP)
+    chunk = np.ascontiguousarray(mix[:, start : start + TSAMP], dtype=np.float32)
     x = torch.from_numpy(chunk).unsqueeze(0).to(dev)  # [1,2,TSAMP]
+    print(f"window at {start / 44100:.1f}s ({start} samples)")
 
     model = bfo.load_model(args.checkpoint, args.config)
     if dev.type == "cuda":
