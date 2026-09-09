@@ -6,7 +6,7 @@ neural network core to ONNX and manually validating that core through Python
 `onnxruntime`.
 
 One graph is published, and the recipe below is the only way it is built: the
-blocked, all-fp16 core at T = 1101 is what `musetric` loads on desktop and on a
+blocked, all-fp16 core at T = 1100 is what `musetric` loads on desktop and on a
 phone alike.
 
 ## Export Boundary
@@ -33,18 +33,18 @@ You do not have to rebuild anything. The core is published (MIT) at
 
 | File | SHA256 |
 |---|---|
-| `syhft_core_t1101.onnx` | `74305da0ca0d814eec99b6314ec41d8cbf8cc1a82dc60488e4f31b70439027a9` |
-| `syhft_core_t1101.onnx.data` | `b08cfc80905e3560a4dd5d30f641299a47dd96d309ebbe9524d9d6c9d2a0356f` |
+| `syhft_core_t1100.onnx` | `8b624200ac9bfc76c38fbcc9dcde3901f307acd6ee7e95b5b0a6cb3022585758` |
+| `syhft_core_t1100.onnx.data` | `06b41c5798b3c44d514e74feca715a002031c26fa390fcea913ad01844fb7221` |
 
 Download both files into `tmp/models` (the `.data` file must sit next to its graph):
 
 ```bash
 uv run hf download musetric/vocal-separation-roformer-onnx \
-  syhft_core_t1101.onnx syhft_core_t1101.onnx.data \
+  syhft_core_t1100.onnx syhft_core_t1100.onnx.data \
   --local-dir tmp/models
 ```
 
-T = 1101 is the model's full reference context.
+T = 1100 is the published window.
 
 ## Install Tooling
 
@@ -65,15 +65,15 @@ Three steps: export, re-tree the wide `Concat`/`Split` nodes, audit the epsilon.
 uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
-  --output tmp/models/core_t1101.onnx \
-  --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1101 --skip-gate
+  --output tmp/models/core_t1100.onnx \
+  --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100 --skip-gate
 
 uv run --group export python scripts/onnx/roformer/split_concat_webgpu.py \
-  --input tmp/models/core_t1101.onnx \
-  --output tmp/models/syhft_core_t1101.onnx
+  --input tmp/models/core_t1100.onnx \
+  --output tmp/models/syhft_core_t1100.onnx
 
 uv run --group export python scripts/onnx/roformer/fp16_epsilon_audit.py \
-  tmp/models/syhft_core_t1101.onnx
+  tmp/models/syhft_core_t1100.onnx
 ```
 
 What each flag is for:
@@ -89,7 +89,7 @@ What each flag is for:
   kernel that accumulates the sum of squares in `f32` inside the shader.
 - `--all-fp16` drops the fp32 pins, which the fused RMSNorm makes safe. Without
   it the `[T, 60, 1536]` activations become 387 MiB fp32 tensors with a cast copy
-  each at T = 1101.
+  each at T = 1100.
 - `split_concat_webgpu.py` re-trees wide `Concat`/`Split` to <=8-wide so every
   shader stays at <=9 storage buffers, under the strictest shipping cap
   (Dawn/Metal on macOS reports `maxStorageBuffersPerShaderStage = 10`).
@@ -109,7 +109,12 @@ qkv projection with the three projections the following rearrange splits it into
 anyway:
 
 ```bash
-uv run --group export python scripts/onnx/roformer/build_full_onnx.py   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml   --output tmp/models/core_split4_t1100.onnx   --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100   --skip-gate --split-rows 4
+uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
+  --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
+  --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
+  --output tmp/models/core_split4_t1100.onnx \
+  --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100 \
+  --skip-gate --split-rows 4
 ```
 
 Both rewrites are exact in fp16, because rows of a matmul are independent and
@@ -147,7 +152,7 @@ Python:
 uv run python scripts/onnx/roformer/validate_full_onnx.py \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
-  --source tmp/sample.flac --out-dir tmp/bench_out_t1101 --frames 1101 --device cuda
+  --source tmp/sample.flac --out-dir tmp/bench_out_t1100 --frames 1100 --device cuda
 ```
 
 Then run `@musetric/ai`'s parity test (`yarn workspace @musetric/ai test`), which
@@ -156,14 +161,14 @@ loads `full_input.f32` / `full_ref_vocals.f32` and compares the WebGPU output.
 ## Inspect Ops
 
 ```bash
-uv run --group export python scripts/onnx/roformer/op_audit.py tmp/models/syhft_core_t1101.onnx
+uv run --group export python scripts/onnx/roformer/op_audit.py tmp/models/syhft_core_t1100.onnx
 ```
 
 ## Run Python ONNX Inference
 
 ```bash
 uv run --group export python scripts/onnx/roformer/infer_separator.py \
-  --model tmp/models/syhft_core_t1101.onnx \
+  --model tmp/models/syhft_core_t1100.onnx \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --source path/to/input.wav \
   --target-output tmp/out/target.flac \

@@ -41,7 +41,7 @@ WIN = 2048
 HEADS = 8
 HEAD_DIM = 64
 HIDDEN = HEADS * HEAD_DIM  # 512
-T = 1101  # default frame count, the published window; override with --frames
+T = 1100  # default frame count, the published window; override with --frames
 TSAMP = HOP * (T - 1)  # 220500
 PAD = N_FFT // 2  # 1024
 FREQS = N_FFT // 2 + 1  # 1025
@@ -177,7 +177,7 @@ def set_attention_block(model: MelBandRoformer, q_block: int) -> int:
 
     Exact, not an approximation — see Attend.forward. The point is the peak score
     tensor: this model's six time-attention layers otherwise allocate
-    [60, 8, T, T] fp16, which is 230 MiB at T=501 and 1110 MiB at T=1101, past
+    [60, 8, T, T] fp16, which is 230 MiB at T=501 and 1108 MiB at T=1100, past
     what a mobile WebGPU storage buffer will bind. The six band-attention layers
     are [T, 8, 60, 60] and were never the problem, so blocking skips them (their
     sequence is 60, below any sensible block).
@@ -336,7 +336,7 @@ def main() -> None:
         action="store_true",
         help="convert everything except graph IO to fp16, including the RMSNorm "
         "islands and Softmax that are normally pinned to fp32. Those pins cost "
-        "nothing at T=501 but at T=1101 they turn the [T,60,1536] activations "
+        "nothing at T=501 but at T=1100 they turn the [T,60,1536] activations "
         "into 387 MiB fp32 tensors plus a cast copy each, which is far past what "
         "an Adreno storage buffer addresses. RMSNormalization then carries "
         f"epsilon={RMSNORM_EPS_FP16:g} instead of {RMSNORM_EPS:g}, which is what "
