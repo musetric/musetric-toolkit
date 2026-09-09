@@ -145,18 +145,19 @@ Gates: conversion SNR vs torch >= 40 dB, NaN = 0. The reference I/O comes from
 Python:
 
 ```bash
-# --frames must match the model; --out-dir is per-T (the parity test reads
-# bench_out_t<frames>). Large T (>=~901) needs --device cuda: the CPU torch
-# forward segfaults on the 2.3 GB T² attention sim, while flash SDPA on cuda
-# never materializes it.
+# --frames must match the model, and --out-dir is per-T. Large T (>=~901)
+# needs --device cuda: the CPU torch forward segfaults on the 2.3 GB T²
+# attention sim, while flash SDPA on cuda never materializes it.
 uv run python scripts/onnx/roformer/validate_full_onnx.py \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --source tmp/sample.flac --out-dir tmp/bench_out_t1100 --frames 1100 --device cuda
 ```
 
-Then run `@musetric/ai`'s parity test (`yarn workspace @musetric/ai test`), which
-loads `full_input.f32` / `full_ref_vocals.f32` and compares the WebGPU output.
+It writes `full_input.f32` and `full_ref_vocals.f32` into `--out-dir`, planar
+little-endian stereo, and prints the offset of the window it chose. Scoring an
+execution provider against them takes a comparator that runs the ONNX and
+measures SNR; this repository does not carry one.
 
 ## Inspect Ops
 
