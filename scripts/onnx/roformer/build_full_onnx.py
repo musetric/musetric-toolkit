@@ -19,13 +19,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 import yaml
+from einops import rearrange
 from torch import nn
 
 with contextlib.suppress(Exception):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from musetric_toolkit.separate_audio.roformer.attend import Attend
-from musetric_toolkit.separate_audio.roformer.mel_band_roformer import MelBandRoformer
+from musetric_toolkit.separate_audio.roformer.mel_band_roformer import (
+    Attention,
+    FeedForward,
+    MelBandRoformer,
+)
 from musetric_toolkit.separate_audio.roformer_utils import dict_to_namespace
 
 N_FFT = 2048
@@ -185,6 +190,77 @@ def set_attention_block(model: MelBandRoformer, q_block: int) -> int:
     return count
 
 
+class RowChunkedFeedForward(nn.Module):
+    """Run a feed-forward block over row chunks instead of the whole activation.
+
+    Exact, and exact in fp16 too: rows of a matmul are independent, so every
+    output row is produced by the same arithmetic as before. Splitting the
+    reduction axis instead reorders the sums and costs roughly 66 dB a layer.
+
+    The point is dispatch length. One feed-forward is a [rows, 384] x [384, 1536]
+    matmul, which a mobile GPU runs as a single uninterruptible half-second of
+    work; a queue-level flush threshold cannot reach inside it. Chunking also
+    keeps the wide [rows, 1536] intermediate from being materialized at full
+    height, so peak memory falls instead of rising.
+    """
+
+    def __init__(self, net: nn.Sequential, parts: int) -> None:
+        super().__init__()
+        self.net = net
+        self.parts = parts
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.cat([self.net(c) for c in x.chunk(self.parts, dim=0)], dim=0)
+
+
+def _attention_forward_unfused(self: Attention, x: torch.Tensor) -> torch.Tensor:
+    """Attention.forward with the fused qkv projection replaced by three."""
+    x = self.norm(x)
+    q = rearrange(self.to_q(x), "b n (h d) -> b h n d", h=self.heads)
+    k = rearrange(self.to_k(x), "b n (h d) -> b h n d", h=self.heads)
+    v = rearrange(self.to_v(x), "b n (h d) -> b h n d", h=self.heads)
+    if self.rotary_embed is not None:
+        q = self.rotary_embed.rotate_queries_or_keys(q)
+        k = self.rotary_embed.rotate_queries_or_keys(k)
+    out = self.attend(q, k, v)
+    gates = self.to_gates(x)
+    out = out * rearrange(gates, "b n h -> b h n 1").sigmoid()
+    out = rearrange(out, "b h n d -> b n (h d)")
+    return self.to_out(out)
+
+
+def split_heavy_projections(model: MelBandRoformer, parts: int) -> tuple[int, int]:
+    """Cut the two longest matmuls of every transformer layer into shorter ones.
+
+    Feed-forwards are chunked by rows into `parts`. The fused qkv projection is
+    replaced by the three projections the following rearrange splits it into
+    anyway, so nothing downstream wants the fused tensor back.
+
+    Both rewrites are exact and neither adds a Concat over a wide activation.
+    Doing the same on the exported graph with Split/Concat instead does, and
+    pays several hundred MB of peak memory for it.
+    """
+    feeds = 0
+    for module in list(model.modules()):
+        if isinstance(module, FeedForward):
+            module.net = RowChunkedFeedForward(module.net, parts)
+            feeds += 1
+    attentions = 0
+    for module in list(model.modules()):
+        if not isinstance(module, Attention):
+            continue
+        weight = module.to_qkv.weight.data
+        inner = weight.shape[0] // 3
+        for name, index in (("to_q", 0), ("to_k", 1), ("to_v", 2)):
+            linear = nn.Linear(module.to_qkv.in_features, inner, bias=False)
+            linear.weight.data.copy_(weight[index * inner : (index + 1) * inner])
+            setattr(module, name, linear)
+        del module.to_qkv
+        module.forward = _attention_forward_unfused.__get__(module, Attention)
+        attentions += 1
+    return feeds, attentions
+
+
 def load_model(checkpoint: Path, config: Path) -> MelBandRoformer:
     with open(config) as f:
         cfg = dict_to_namespace(yaml.load(f, Loader=yaml.FullLoader))  # noqa: S506
@@ -277,6 +353,16 @@ def main() -> None:
         "storage buffers cannot bind.",
     )
     p.add_argument(
+        "--split-rows",
+        type=int,
+        default=0,
+        help="chunk every feed-forward into this many row groups and unfuse the "
+        "qkv projection into three (0 = off). Exact, fp16 included, and the same "
+        "FLOPs; it only shortens the two longest matmuls of each layer, which a "
+        "mobile GPU otherwise runs as one uninterruptible dispatch each -- the "
+        "part of a run that a queue-level flush threshold cannot break up.",
+    )
+    p.add_argument(
         "--core-only",
         action="store_true",
         help="export the web core (stft_repr -> per-bin masks), NOT the full "
@@ -298,6 +384,12 @@ def main() -> None:
             f"attention blocked at {args.attn_block} query rows over {n} layers; "
             f"peak time-attention score tensor {peak / 1048576:.1f} MiB "
             f"(was {60 * 8 * T * T * 2 / 1048576:.1f} MiB)"
+        )
+    if args.split_rows:
+        feeds, attentions = split_heavy_projections(model, args.split_rows)
+        print(
+            f"split {feeds} feed-forwards into {args.split_rows} row groups, "
+            f"unfused {attentions} qkv projections"
         )
     # warm RotaryEmbedding cache at T (decode path mutates it on first call)
     with torch.no_grad():

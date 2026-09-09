@@ -94,6 +94,35 @@ What each flag is for:
   shader stays at <=9 storage buffers, under the strictest shipping cap
   (Dawn/Metal on macOS reports `maxStorageBuffersPerShaderStage = 10`).
 
+## Shorten the Longest Dispatches
+
+`--split-rows N` is optional and aimed at mobile GPUs. A run of this core is
+dominated by a handful of very long matmuls: the feed-forward projections and
+the fused qkv projection of each layer are each a single dispatch tens of times
+longer than the median one. Nothing at the runtime level can break those up -- a
+flush threshold only decides how many dispatches ride in one submit, never how
+long one of them runs -- so the compositor is locked out for as long as the
+longest one takes, and that is what a freeze is.
+
+The flag chunks every feed-forward over `N` row groups and replaces the fused
+qkv projection with the three projections the following rearrange splits it into
+anyway:
+
+```bash
+uv run --group export python scripts/onnx/roformer/build_full_onnx.py   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml   --output tmp/models/core_split4_t1100.onnx   --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100   --skip-gate --split-rows 4
+```
+
+Both rewrites are exact in fp16, because rows of a matmul are independent and
+the qkv split only skips a fusion. Splitting the *reduction* axis instead --
+which is the obvious way to cut the same matmul -- is not exact in fp16: it
+reorders the sums and costs roughly 66 dB a layer. Doing it on the exported
+graph with `Split`/`Concat` nodes is exact but materializes the wide activation
+twice, which costs several hundred MB of peak memory; doing it here costs none,
+because the wide intermediate is never built at full height.
+
+Run the same validation as any other core afterwards. Peak GPU memory falls
+rather than rises, and total time moves by about a percent.
+
 **The epsilon is dtype-dependent and the audit is not optional.** In fp16 the
 `RMSNormalization` reciprocal `1/sqrt(mean(x^2) + eps)` is cast back to fp16, so
 any row under `1/65504^2 = 2.33e-10` becomes `+inf` and then `0 * inf = NaN`,
