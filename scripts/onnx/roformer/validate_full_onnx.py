@@ -50,7 +50,7 @@ def main() -> None:
     p.add_argument(
         "--device",
         default="cpu",
-        help="cpu (default) or cuda. Large T (e.g. 1101) needs cuda — "
+        help="cpu (default) or cuda. Large T (e.g. 1100) needs cuda — "
         "the T² attention sim overflows CPU; on cuda flash SDPA avoids "
         "materializing it.",
     )

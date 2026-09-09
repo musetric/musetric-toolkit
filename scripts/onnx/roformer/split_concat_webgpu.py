@@ -49,7 +49,7 @@ for t in graph.initializer:
 
 # --- Pass 0: keep attention Softmax in fp16 -------------------------------
 # The fp16 conversion wraps each Softmax in Cast(fp16->fp32)->Softmax->Cast
-# (a NaN guard). That fp32 score matrix is 480*1101*1101*4 = 2.33 GB > the 2 GB
+# (a NaN guard). That fp32 score matrix is 480*1100*1100*4 = 2.32 GB > the 2 GB
 # WebGPU maxBufferSize cap. Dropping the casts keeps scores fp16 (1.16 GB), which
 # fits. After the export weight-sanitize the fp16 softmax is NaN-free
 # (the ~0.45% NaN was a single bad weight, not the softmax). See converting.md.
