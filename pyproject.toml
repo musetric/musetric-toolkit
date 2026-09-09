@@ -20,7 +20,7 @@ dependencies = [
     "soundfile==0.14.0",
     "nnAudio==0.3.4",
     "librosa==0.11.0",
-    "onnxruntime-gpu==1.26.0",
+    "onnxruntime-gpu==1.29.0",
 ]
 
 [project.scripts]
@@ -61,9 +61,9 @@ check = [
     "ruff==0.15.17",
 ]
 export = [
-    "onnx==1.21.0",
+    "onnx==1.22.0",
     "onnxconverter-common==1.16.0",
-    "onnxscript==0.7.0",
+    "onnxscript==0.7.1",
 ]
 
 [build-system]
