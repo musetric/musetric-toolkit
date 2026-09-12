@@ -63,6 +63,24 @@ writes them as `starts`/`ends`/`axes` initializers. Same partition of the same
 axis, no weight read, three initializers added per output. Run it on the export
 before validating, so every later step sees the graph that ships.
 
+## Adreno WebGPU rewrite
+
+On Adreno 6xx the stock graph returns silently wrong logits: shared-tile
+`Transpose`/`Conv`, inference `BatchNormalization`, and the 1500×1500
+time-attention MatMul. The shipping rewrite pins **513 frames**, replaces the
+broken Transpose/Conv families, and folds BatchNorm to Mul+Add. Rebuild:
+
+```sh
+uv run --group export python scripts/onnx/beat_this/capture_shapes.py \
+  --model <export-dir>/beat_this.onnx --frames 513 --out shapes513.json
+uv run --group export python scripts/onnx/beat_this/rewrite_static_adreno.py \
+  --model <export-dir>/beat_this.onnx --shapes shapes513.json \
+  --out <export-dir>/beat_this.onnx
+```
+
+The host must always feed `[1, 513, 128]` (pad short clips; long tracks use
+overlapping 513-frame windows).
+
 ## Files
 
 | script | role |
@@ -71,6 +89,8 @@ before validating, so every later step sees the graph that ships.
 | `split_to_slice_webgpu.py` | lower fixed-size `Split` into static `Slice` so the graph compiles on Adreno |
 | `validate_beat_this.py` | beat/downbeat time agreement of the ONNX vs the torch `File2Beats` reference |
 | `dump_reference_mel.py` | dump reference waveforms + log-mels, the parity gate for the runtime's WebGPU front end |
+| `capture_shapes.py` | pin every intermediate shape at a chosen frame count |
+| `rewrite_static_adreno.py` | replace broken Adreno Transpose/Conv/BatchNorm; ship at 513 frames |
 | `stage_beat_this.py` | copy the file set into the publish folder |
 | `publish_beat_this.py` | upload the staged folder to `musetric/beat-this-onnx` on HF |
 
