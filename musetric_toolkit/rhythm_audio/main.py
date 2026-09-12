@@ -2,13 +2,11 @@ import json
 from pathlib import Path
 
 import numpy as np
+import torchaudio
 
 from musetric_toolkit.common.logger import send_message
 from musetric_toolkit.rhythm_audio.beat_this_runner import run_beat_this
-from musetric_toolkit.rhythm_audio.bpm_estimator import (
-    estimate_bpm,
-    estimate_meter,
-)
+from musetric_toolkit.rhythm_audio.bpm_estimator import summarize_rhythm
 from musetric_toolkit.rhythm_audio.response_builder import build_payload
 
 
@@ -20,8 +18,13 @@ def main(args) -> None:
 
     beats_arr = np.asarray(beats)
     downbeats_arr = np.asarray(downbeats)
-    bpm = estimate_bpm(beats_arr)
-    meter = estimate_meter(beats_arr, downbeats_arr)
+    info = torchaudio.info(args.audio_path)
+    duration = info.num_frames / info.sample_rate
+    bpm, beats_arr, downbeats_arr, meter = summarize_rhythm(
+        beats_arr,
+        downbeats_arr,
+        duration,
+    )
 
     payload = build_payload(beats_arr, downbeats_arr, bpm, meter)
 
