@@ -33,8 +33,8 @@ You do not have to rebuild anything. The core is published (MIT) at
 
 | File | SHA256 |
 |---|---|
-| `syhft_core_t1100.onnx` | `8b624200ac9bfc76c38fbcc9dcde3901f307acd6ee7e95b5b0a6cb3022585758` |
-| `syhft_core_t1100.onnx.data` | `06b41c5798b3c44d514e74feca715a002031c26fa390fcea913ad01844fb7221` |
+| `syhft_core_t1100.onnx` | `88b51e87dd2fa02acecf95d880a3833c307bf780b101dd39021de7b821faec22` |
+| `syhft_core_t1100.onnx.data` | `648db04fce69e556bc1fb08486ffd7f7ac50d370b1c6026e42ffea9cd621a7ed` |
 
 Download both files into `tmp/models` (the `.data` file must sit next to its graph):
 
@@ -59,20 +59,25 @@ uv sync --group export
 
 ## Build a Core
 
-Three steps: export, re-tree the wide `Concat`/`Split` nodes, audit the epsilon.
+Four steps: export, re-tree the wide `Concat`/`Split` nodes, audit the epsilon,
+audit the dispatch rows.
 
 ```bash
 uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
   --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --output tmp/models/core_t1100.onnx \
-  --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100 --skip-gate
+  --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100 --skip-gate \
+  --split-rows 4
 
 uv run --group export python scripts/onnx/roformer/split_concat_webgpu.py \
   --input tmp/models/core_t1100.onnx \
   --output tmp/models/syhft_core_t1100.onnx
 
 uv run --group export python scripts/onnx/roformer/fp16_epsilon_audit.py \
+  tmp/models/syhft_core_t1100.onnx
+
+uv run --group export python scripts/onnx/roformer/dispatch_rows_audit.py \
   tmp/models/syhft_core_t1100.onnx
 ```
 
@@ -90,13 +95,50 @@ What each flag is for:
 - `--all-fp16` drops the fp32 pins, which the fused RMSNorm makes safe. Without
   it the `[T, 60, 1536]` activations become 387 MiB fp32 tensors with a cast copy
   each at T = 1100.
+- `--split-rows 4` shortens the longest dispatches; see below.
 - `split_concat_webgpu.py` re-trees wide `Concat`/`Split` to <=8-wide so every
   shader stays at <=9 storage buffers, under the strictest shipping cap
   (Dawn/Metal on macOS reports `maxStorageBuffersPerShaderStage = 10`).
 
+## Keep Row-Dispatched Kernels Under 65535 Rows
+
+The exporter applies this on every build; there is no flag. Several onnxruntime
+WebGPU kernels run one workgroup per row and have no bounds check, because their
+shared-memory reduction needs `workgroupBarrier()` in uniform control flow: the
+normalizations, `Softmax`, `LpNormalization`, `TopK`, `InstanceNormalization`
+and the `Reduce*` family. Past `maxComputeWorkgroupsPerDimension` rows (65535,
+the WebGPU default and what Dawn/Metal reports) the EP turns the dispatch into a
+`ceil(sqrt(rows))^2` square, and the spare workgroups write past the end of the
+output. Dawn on Metal clamps that index to the last element:
+
+- with the default bucketed storage cache the buffer is rounded up and the stray
+  writes land in the slack, so nothing shows;
+- with `storageBufferCacheMode: 'simple'` the buffer has the exact size and the
+  last row is overwritten. `RMSNormalization` returns `+inf` there and attention
+  spreads it as NaN over every mask; `Softmax` returns silently wrong values.
+
+At T = 1100 the transformer norms see `[60, 1100, 384]` and `[1100, 60, 384]`,
+66000 rows each, and the band-attention softmax sees `[1100, 8, 60, 60]`, 528000
+rows. The exporter wraps every RMSNorm so it chunks its batch axis once the rows
+pass the cap (two chunks here) and sets `Attend.softmax_rows`, which chunks only
+the score tensor ahead of the softmax (nine chunks). Both are exact: on
+Chrome/Metal the rebuilt core returns masks bit-identical to the previous one
+with the default cache, now with `'simple'` too, and on D3D12 and on Adreno,
+where the stray writes leave the output intact, the two cores agree bit for bit.
+The weights file does not change. The cost is mostly memory: under `'simple'`
+the buffer cache keeps a buffer of every new chunk size for the whole session,
+about 270 MB of peak GPU memory, while wall clock moves by 2-5 %. Chunking q/k/v
+instead of the scores measured 9 %.
+
+`export()` refuses to write a graph where such a node sees more rows or has no
+static input shape, and `dispatch_rows_audit.py` re-checks any artifact. The
+`Reduce*` count is an upper bound: onnxruntime runs some reductions through a
+naive kernel that has the guard.
+
 ## Shorten the Longest Dispatches
 
-`--split-rows N` is optional and aimed at mobile GPUs. A run of this core is
+`--split-rows N` is aimed at mobile GPUs, and the published core is built with
+`--split-rows 4`. A run of this core is
 dominated by a handful of very long matmuls: the feed-forward projections and
 the fused qkv projection of each layer are each a single dispatch tens of times
 longer than the median one. Nothing at the runtime level can break those up -- a

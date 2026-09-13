@@ -4,6 +4,7 @@
 # Modified for Musetric project
 
 import logging
+import math
 import warnings
 
 import torch
@@ -12,6 +13,21 @@ from torch.nn import functional
 from torch.nn.attention import SDPBackend
 
 _backends_logged = {"value": False}
+
+
+def row_chunks(batch: int, rows_per_batch: int, row_limit: int) -> int:
+    """Fewest equal chunks of the batch axis that keep every chunk <= row_limit rows.
+
+    Counts chunks the way torch.chunk cuts them, ceil(batch / parts) per chunk.
+    """
+    if rows_per_batch > row_limit:
+        raise ValueError(
+            f"one batch row already spans {rows_per_batch} rows, past {row_limit}"
+        )
+    parts = math.ceil(batch * rows_per_batch / row_limit)
+    while math.ceil(batch / parts) * rows_per_batch > row_limit:
+        parts += 1
+    return parts
 
 
 def log_selected_backend(q, k, v, backends):
@@ -46,8 +62,9 @@ class Attend(nn.Module):
         self.dropout = dropout
         self.attn_dropout = nn.Dropout(dropout)
         self.flash = flash
-        # 0 = off. Export-only knob; see the matmul path in forward().
+        # 0 = off. Export-only knobs; see the matmul path in forward().
         self.q_block = 0
+        self.softmax_rows = 0
 
     def flash_attn(self, q, k, v):
         backends = [
@@ -87,10 +104,27 @@ class Attend(nn.Module):
             for start in range(0, q.shape[-2], self.q_block):
                 q_part = q[..., start : start + self.q_block, :]
                 sim = torch.matmul(q_part, k.transpose(-1, -2)) * scale
-                attn = self.attn_dropout(sim.softmax(dim=-1))
+                attn = self.attn_dropout(self.softmax(sim))
                 outputs.append(torch.matmul(attn, v))
             return torch.cat(outputs, dim=-2)
 
         sim = torch.matmul(q, k.transpose(-1, -2)) * scale
-        attn = self.attn_dropout(sim.softmax(dim=-1))
+        attn = self.attn_dropout(self.softmax(sim))
         return torch.matmul(attn, v)
+
+    def softmax(self, sim):
+        # softmax_rows splits the score tensor over its batch axis so that no
+        # softmax sees more rows than that. Exact: every row normalizes on its own.
+        # The point is a WebGPU kernel that dispatches one workgroup per row with no
+        # bounds check; past the per-dimension workgroup cap the dispatch goes 2D,
+        # the spare workgroups write past the end of the output, and on an
+        # exact-size buffer that lands on its last row. The band-attention scores of
+        # this model are [T, 8, 60, 60], 528000 rows at T=1100. Only the softmax is
+        # chunked: splitting q/k/v instead multiplies the matmul dispatches and
+        # measured more than twice the cost.
+        if self.softmax_rows:
+            rows_per_batch = math.prod(sim.shape[1:-1])
+            parts = row_chunks(sim.shape[0], rows_per_batch, self.softmax_rows)
+            if parts > 1:
+                return torch.cat([c.softmax(dim=-1) for c in sim.chunk(parts)])
+        return sim.softmax(dim=-1)
