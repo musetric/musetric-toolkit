@@ -25,11 +25,12 @@ from torch import nn
 with contextlib.suppress(Exception):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from musetric_toolkit.separate_audio.roformer.attend import Attend
+from musetric_toolkit.separate_audio.roformer.attend import Attend, row_chunks
 from musetric_toolkit.separate_audio.roformer.mel_band_roformer import (
     Attention,
     FeedForward,
     MelBandRoformer,
+    RMSNorm,
 )
 from musetric_toolkit.separate_audio.roformer_utils import dict_to_namespace
 
@@ -66,6 +67,50 @@ RMSNORM_EPS = 1e-12
 # patch first used is far outside it.
 RMSNORM_EPS_FP16 = 1e-9
 FP16_RSQRT_FLOOR = 1.0 / 65504.0**2  # 2.33e-10
+# Several onnxruntime WebGPU kernels dispatch one workgroup per row and have no
+# bounds check, because their shared-memory reduction needs workgroupBarrier() in
+# uniform control flow: the normalizations, Softmax, LpNormalization, TopK,
+# InstanceNormalization and the Reduce* family. Past
+# maxComputeWorkgroupsPerDimension rows the EP turns the dispatch into a
+# ceil(sqrt(rows))^2 square, and the spare workgroups write past the end of the
+# output. Dawn on Metal clamps that index to the last element, so on a buffer of
+# exact size the last row comes back wrong: +inf out of RMSNormalization, then NaN
+# over the whole output after attention. A size-bucketed buffer cache hides it in
+# the slack, storageBufferCacheMode 'simple' does not; D3D12 drops the stray
+# writes. 65535 is the WebGPU default for the cap and what Dawn/Metal reports, so
+# no such kernel may see more rows than that. Measured on Chrome/Metal with
+# one-node fp16 graphs: RMSNormalization over [60, 1100, 384] (66000 rows) returns
+# 4 inf in row 65999, [60, 1092, 384] (65520) is exact; Softmax over
+# [1100, 8, 60, 60] returns 4 wrong values in its last row.
+WEBGPU_DISPATCH_ROWS = 65535
+LEADING_AXES_OPS = frozenset(
+    {"LayerNormalization", "RMSNormalization", "SimplifiedLayerNormalization"}
+)
+LAST_AXIS_OPS = frozenset(
+    {"SkipLayerNormalization", "SkipSimplifiedLayerNormalization"}
+)
+ONE_AXIS_OPS = frozenset({"LpNormalization", "Softmax", "TopK"})
+REDUCE_OPS = frozenset(
+    {
+        "ReduceL1",
+        "ReduceL2",
+        "ReduceLogSum",
+        "ReduceLogSumExp",
+        "ReduceMax",
+        "ReduceMean",
+        "ReduceMin",
+        "ReduceProd",
+        "ReduceSum",
+        "ReduceSumSquare",
+    }
+)
+ROW_DISPATCH_OPS = (
+    LEADING_AXES_OPS
+    | LAST_AXIS_OPS
+    | ONE_AXIS_OPS
+    | REDUCE_OPS
+    | {"InstanceNormalization"}
+)
 
 
 def hann_periodic() -> np.ndarray:
@@ -261,6 +306,49 @@ def split_heavy_projections(model: MelBandRoformer, parts: int) -> tuple[int, in
     return feeds, attentions
 
 
+class RowChunkedRMSNorm(nn.Module):
+    """Run an RMSNorm over batch chunks once its rows pass WEBGPU_DISPATCH_ROWS.
+
+    Exact, fp16 included: every row is normalized on its own. The transformers
+    normalize [60, T, 384] and [T, 60, 384], 66000 rows each at T=1100, which
+    two chunks bring under the cap; every other norm of the model stays whole.
+    """
+
+    def __init__(self, norm: RMSNorm) -> None:
+        super().__init__()
+        self.norm = norm
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rows_per_batch = int(np.prod(x.shape[1:-1]))
+        parts = row_chunks(x.shape[0], rows_per_batch, WEBGPU_DISPATCH_ROWS)
+        if parts == 1:
+            return self.norm(x)
+        return torch.cat([self.norm(c) for c in x.chunk(parts, dim=0)], dim=0)
+
+
+def cap_dispatch_rows(model: MelBandRoformer) -> tuple[int, int]:
+    """Keep every normalization and softmax under WEBGPU_DISPATCH_ROWS rows.
+
+    Norms are wrapped and chunk themselves when their input is too tall. Softmax
+    lives inside Attend, which chunks the score tensor over its batch axis right
+    before the softmax and leaves the matmuls around it whole. Chunks are computed
+    from the static export shapes, so the graph only gains Split/Concat where a
+    kernel would otherwise overflow.
+    """
+    norms = 0
+    for module in list(model.modules()):
+        for name, child in list(module.named_children()):
+            if isinstance(child, RMSNorm):
+                setattr(module, name, RowChunkedRMSNorm(child))
+                norms += 1
+    attends = 0
+    for module in model.modules():
+        if isinstance(module, Attend):
+            module.softmax_rows = WEBGPU_DISPATCH_ROWS
+            attends += 1
+    return norms, attends
+
+
 def load_model(checkpoint: Path, config: Path) -> MelBandRoformer:
     with open(config) as f:
         cfg = dict_to_namespace(yaml.load(f, Loader=yaml.FullLoader))  # noqa: S506
@@ -391,6 +479,11 @@ def main() -> None:
             f"split {feeds} feed-forwards into {args.split_rows} row groups, "
             f"unfused {attentions} qkv projections"
         )
+    norms, attends = cap_dispatch_rows(model)
+    print(
+        f"capped dispatch rows at {WEBGPU_DISPATCH_ROWS} over {norms} norms "
+        f"and {attends} attention layers"
+    )
     # warm RotaryEmbedding cache at T (decode path mutates it on first call)
     with torch.no_grad():
         model.net_forward(torch.randn(1, PACKED, T, 2))
@@ -584,6 +677,7 @@ def export(  # noqa: C901, PLR0913, PLR0915
         if core_only:
             ensure_float32_outputs(model16)
         assert_fp16_epsilon_safe(model16)
+        assert_dispatch_rows_safe(model16)
         save_fp16(model16, output)
         reloaded = onnx.load(str(output))
         nfix = sanitize_fp16_initializers(reloaded)
@@ -780,6 +874,75 @@ def assert_fp16_epsilon_safe(model) -> None:
             f"NaN on a WebGPU kernel: {', '.join(bad[:4])}"
             + (" ..." if len(bad) > 4 else "")  # noqa: PLR2004
         )
+
+
+def assert_dispatch_rows_safe(model) -> None:
+    """Fail the build if a row-dispatched kernel would see more rows than
+    WEBGPU_DISPATCH_ROWS, or if its input shape is not known statically — the
+    overflow described at WEBGPU_DISPATCH_ROWS.
+    """
+    graph = model.graph
+    shapes = {}
+    for value in list(graph.value_info) + list(graph.input) + list(graph.output):
+        dims = value.type.tensor_type.shape.dim
+        if dims and all(d.HasField("dim_value") for d in dims):
+            shapes[value.name] = [d.dim_value for d in dims]
+    constants = {t.name: t for t in graph.initializer}
+
+    bad: list[str] = []
+    for node in graph.node:
+        if node.op_type not in ROW_DISPATCH_OPS:
+            continue
+        dims = shapes.get(node.input[0])
+        rows = None if dims is None else dispatch_rows(node, dims, constants)
+        if rows is None:
+            bad.append(f"{node.name or node.op_type}=unknown rows")
+            continue
+        if rows > WEBGPU_DISPATCH_ROWS:
+            bad.append(f"{node.name or node.op_type}{dims}={rows}")
+    if bad:
+        raise RuntimeError(
+            f"{len(bad)} row-dispatched node(s) exceed {WEBGPU_DISPATCH_ROWS} rows, "
+            f"which overflows their WebGPU output: {', '.join(bad[:4])}"
+            + (" ..." if len(bad) > 4 else "")  # noqa: PLR2004
+        )
+
+
+def dispatch_rows(node, dims: list[int], constants: dict) -> int | None:
+    """Rows a WebGPU kernel dispatches one workgroup each for, None when unknown.
+    The exported graph is past opset 13, so Softmax normalizes a single axis.
+    """
+    import onnx  # noqa: PLC0415
+
+    def attribute(name: str, default):
+        return next(
+            (
+                onnx.helper.get_attribute_value(a)
+                for a in node.attribute
+                if a.name == name
+            ),
+            default,
+        )
+
+    rank = len(dims)
+    size = int(np.prod(dims))
+    if node.op_type in LAST_AXIS_OPS:
+        return size // dims[-1]
+    if node.op_type == "InstanceNormalization":
+        return dims[0] * dims[1]
+    if node.op_type in REDUCE_OPS:
+        axes = attribute("axes", None)
+        if axes is None and len(node.input) > 1 and node.input[1]:
+            if node.input[1] not in constants:
+                return None
+            axes = onnx.numpy_helper.to_array(constants[node.input[1]]).tolist()
+        axes = range(rank) if axes is None else axes
+        return size // int(np.prod([dims[axis] for axis in axes]))
+    axis = attribute("axis", -1)
+    axis = axis + rank if axis < 0 else axis
+    if node.op_type in LEADING_AXES_OPS:
+        return int(np.prod(dims[:axis]))
+    return size // dims[axis]
 
 
 def ensure_float32_outputs(model) -> int:

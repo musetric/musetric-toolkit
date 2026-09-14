@@ -88,6 +88,10 @@ for vi in stale_vi:
 print(f"unwrapped {n_softmax} Softmax to fp16 (removed {len(removed_ids)} casts)")
 
 inits = {t.name: t for t in graph.initializer}
+static_dims = {
+    vi.name: [d.dim_value for d in vi.type.tensor_type.shape.dim]
+    for vi in list(graph.value_info) + list(graph.input)
+}
 
 new_nodes = []
 new_inits = []
@@ -102,6 +106,24 @@ def get_axis(node) -> int:
 def chunks(seq):
     for start in range(0, len(seq), GROUP):
         yield seq[start : start + GROUP]
+
+
+def split_sizes(node) -> np.ndarray:
+    if len(node.input) > 1 and node.input[1]:
+        return numpy_helper.to_array(inits[node.input[1]]).astype(np.int64)
+    # opset >= 18 Split without a sizes input (what torch.chunk exports): every
+    # output is ceil(dim / num_outputs) along the axis and the last one takes the
+    # rest, so the sizes follow from the static input shape.
+    dims = static_dims[node.input[0]]
+    axis = get_axis(node)
+    dim = dims[axis if axis >= 0 else axis + len(dims)]
+    if dim <= 0:
+        raise RuntimeError(
+            f"{node.name}: Split input has no static size on axis {axis}"
+        )
+    count = len(node.output)
+    step = -(-dim // count)
+    return np.array([step] * (count - 1) + [dim - step * (count - 1)], dtype=np.int64)
 
 
 for node in graph.node:
@@ -133,7 +155,7 @@ for node in graph.node:
         axis = get_axis(node)
         base = node.name or f"split_{n_split}"
         data_in = node.input[0]
-        sizes = numpy_helper.to_array(inits[node.input[1]]).astype(np.int64)
+        sizes = split_sizes(node)
         outs = list(node.output)
 
         out_groups = list(chunks(outs))
