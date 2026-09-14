@@ -25,7 +25,9 @@ Softmax over [1100, 8, 60, 60] = 528000 rows gives 4 wrong values. On Chrome/D3D
 the same graphs are exact, because the stray writes are dropped there.
 
 The rule this enforces: no such node sees more than 65535 rows, the WebGPU default
-cap, and every such node has a static input shape so that can be checked. The
+cap, and every such node has a static input shape so that can be checked. Shapes
+are inferred from the graph inputs first, so a static-input graph without
+value_info is checked too. The
 Reduce* count is the number of reductions, an upper bound: onnxruntime runs some
 reductions through a naive kernel that has the guard.
 
@@ -41,7 +43,7 @@ import sys
 from pathlib import Path
 
 import onnx
-from onnx import numpy_helper
+from onnx import numpy_helper, shape_inference
 
 WEBGPU_DISPATCH_ROWS = 65535
 # from opset 13 Softmax normalizes one axis; before it, everything past `axis`
@@ -143,7 +145,11 @@ def dispatch_rows(node, dims: list[int], opset: int, constants: dict) -> int | N
 
 
 def audit_model(path: Path) -> tuple[int, int]:
-    model = onnx.load(str(path), load_external_data=False)
+    # Rewritten graphs often carry no value_info, so infer the shapes first; a
+    # static input is enough for inference to reach every row-dispatched node.
+    model = shape_inference.infer_shapes(
+        onnx.load(str(path), load_external_data=False), data_prop=True
+    )
     opset = next(
         (o.version for o in model.opset_import if o.domain in ("", "ai.onnx")), 0
     )

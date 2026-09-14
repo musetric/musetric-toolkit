@@ -13,6 +13,13 @@
 Tensor shapes come from `capture_shapes.py` because ONNX shape inference
 cannot resolve runtime-computed Reshape shapes.
 
+Every Gather index and Reshape target is baked for the captured batch and
+frames, so the rewritten graph runs at that shape and no other. Its input and
+output dims are pinned to it: a graph that still declares `windows` looks
+batchable and fails inside a Reshape on any other batch, and a symbolic dim
+keeps the shape arithmetic of the source graph from folding, which leaves it on
+the CPU and blocks WebGPU graph capture.
+
 The rewrite is faithful, but on-device WebGPU runs still carry a residual
 plan-dependent error on Adreno (see the musetric plan,
 gpu/adreno660-strict-2026-09-11.md); the musetric runtime therefore runs this
@@ -144,6 +151,10 @@ def rewrite_conv(ctx: RewriteContext, node: onnx.NodeProto) -> bool:
     shape = ctx.shapes.get(node.input[0], [])
     if any(d is None for d in shape):
         return False
+    if shape[0] != 1:
+        raise SystemExit(
+            f"{node.name}: the Conv rewrite is batch-1 only, captured batch {shape[0]}"
+        )
     c_out, _, kh, kw = weight.shape
     c_in, hin, win = shape[1], shape[2], shape[3]
     attrs = {a.name: helper.get_attribute_value(a) for a in node.attribute}
@@ -255,6 +266,23 @@ def rewrite_conv(ctx: RewriteContext, node: onnx.NodeProto) -> bool:
     return True
 
 
+def pin_io_dims(graph: onnx.GraphProto, shapes: dict[str, list[int]]) -> dict:
+    """Pin symbolic graph input/output dims to the captured input shapes."""
+    values: dict[str, int] = {}
+    for value in graph.input:
+        captured = shapes.get(value.name)
+        if captured is None:
+            continue
+        for dim, size in zip(value.type.tensor_type.shape.dim, captured, strict=True):
+            if dim.HasField("dim_param"):
+                values[dim.dim_param] = size
+    for value in list(graph.input) + list(graph.output):
+        for dim in value.type.tensor_type.shape.dim:
+            if dim.HasField("dim_param") and dim.dim_param in values:
+                dim.dim_value = values[dim.dim_param]
+    return values
+
+
 def main() -> None:
     args = parse_args()
     model = onnx.load(args.model)
@@ -276,6 +304,7 @@ def main() -> None:
             continue
         ctx.new_nodes.append(node)
 
+    pinned = pin_io_dims(graph, ctx.shapes)
     new_graph = helper.make_graph(
         ctx.new_nodes,
         graph.name + "_adreno",
@@ -292,7 +321,7 @@ def main() -> None:
     size_mb = Path(args.out).stat().st_size / 1e6
     print(
         f"saved {args.out}: transposes {ctx.replaced_transposes}, "
-        f"convs {ctx.replaced_convs}, {size_mb:.0f} MB"
+        f"convs {ctx.replaced_convs}, {size_mb:.0f} MB, pinned {pinned}"
     )
 
 
