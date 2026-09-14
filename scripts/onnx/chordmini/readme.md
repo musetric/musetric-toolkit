@@ -94,6 +94,71 @@ through the checkpoint-backed Torch classifier and CPU ONNX Runtime. It checks
 the `[3, 108, 170]` contract and fails when the maximum absolute logit error
 exceeds `1e-4`.
 
+## Static WebGPU rewrite
+
+`chordnet.onnx` as exported routes 79 of its Transposes to onnxruntime's
+shared-tile WebGPU kernel, which computes wrong logits on Adreno 6xx.
+`capture_shapes.py` records the runtime shapes of the exported graph and
+`rewrite_static_adreno.py` replaces those Transposes with constant-index
+Gathers. The published classifier is this rewrite:
+
+```sh
+uv run --group export python scripts/onnx/chordmini/capture_shapes.py \
+  --model <chordnet-export-dir>/chordnet.onnx --input features \
+  --frames 108 --windows 16 --shape 16,108,144 --ops Transpose \
+  --out <shapes.json> --probe <probe.onnx>
+
+uv run --group export python scripts/onnx/chordmini/rewrite_static_adreno.py \
+  --model <chordnet-export-dir>/chordnet.onnx --shapes <shapes.json> \
+  --out <rewrite-dir>/chordnet.onnx
+
+uv run --group export python scripts/onnx/roformer/dispatch_rows_audit.py \
+  <rewrite-dir>/chordnet.onnx
+```
+
+The build is deterministic: the batch-16 rewrite of the `fbd620e6` export comes
+out as `6907d39254c4…` on Windows and on macOS alike, and `--windows 1` rebuilds
+the earlier batch-1 graph node for node.
+
+The rewrite is exact against the exported graph (max |Δlogit| ~5e-6 on ORT
+CPU and on WebGPU) but static: every Gather index and Reshape target is baked
+for the captured batch, so it runs at `[--windows, 108, 144]` and nothing else.
+The rewrite pins the graph input and output to that shape, which also lets
+onnxruntime fold the source graph's shape arithmetic instead of evaluating it on
+the CPU at every run (411 -> 333 WebGPU dispatches per run).
+
+The runtime feeds a track in groups of `--windows` windows and pads the last
+group with zero windows; windows never interact inside the model, so padding
+changes no real logit. The batch decides the speed. A WebGPU run pays a fixed
+~4 ms of dispatch encoding for the ~333 kernels on top of ~1.5 ms of GPU work
+per window (Chrome/Metal, M2 Pro), so batch 1 spends most of its time
+re-dispatching:
+
+| batch | 20 windows (~3 min) | 60 windows (~10 min) |
+|---|---|---|
+| 1 | 82 ms | 242 ms |
+| 16 | 52 ms | 102 ms |
+| 32 | 50 ms | 98 ms |
+
+Keep the batch at or below 37. The frequency encoder runs Softmax over
+`[windows * 108, 8, 2, 2]`, 1728 rows per window, and onnxruntime's WebGPU
+Softmax and LayerNormalization kernels have no bounds check once a dispatch
+passes 65535 workgroups per dimension: the spare workgroups of the square it
+falls back to write past the end of the output. 16 keeps it at 27648 rows with
+room to spare, and pads at most 15 windows.
+
+The batch-16 graph was checked on devices against the wasm EP of the same file,
+one input of 26 and 60 windows:
+
+- OnePlus 9RT (Adreno 660): max |Δlogit| 5.7e-6, no mismatched logit or argmax,
+  in both buffer cache modes; the exported graph deviates by 0.75 there;
+- desktop NVIDIA (D3D12): max |Δlogit| 6.7e-6;
+- Galaxy S24 Ultra (Adreno 750): every graph deviates, the exported one as
+  much as the rewrite (max |Δlogit| 1.99, one argmax of 2808 frames); the cause
+  is not the rewrite and is not known.
+
+Re-check any other batch on the device before publishing it.
+
 ## Validating end to end
 
 The classifier check above covers the export, not the features. Only the

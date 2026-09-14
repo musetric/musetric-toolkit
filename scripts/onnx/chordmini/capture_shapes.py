@@ -9,9 +9,13 @@ this forward pass is the reliable source for static rewrites.
 By default every intermediate is exposed; graphs that fail to load that way
 can restrict the probe to the inputs of specific op types with --ops.
 
+The shapes are captured for one batch, --windows, and a rewrite built from them
+only runs at that batch.
+
 Usage:
     uv run python capture_shapes.py --model beat_this.onnx --frames 1500 \
-        --out shapes1500.json [--probe probe_all.onnx] [--ops Transpose,Conv]
+        --out shapes1500.json [--probe probe_all.onnx] [--ops Transpose,Conv] \
+        [--windows 16]
 """
 
 import argparse
@@ -27,6 +31,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, help="dynamic source .onnx")
     parser.add_argument("--frames", required=True, type=int, help="frames dim to pin")
+    parser.add_argument(
+        "--windows",
+        default=1,
+        type=int,
+        help="windows (batch) dim to pin. The rewrite bakes every index for this "
+        "batch, so it is the batch the runtime has to feed",
+    )
     parser.add_argument("--out", required=True, help="output shapes .json")
     parser.add_argument(
         "--probe", default="probe_all.onnx", help="temp probe model path"
@@ -47,10 +58,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def pin_windows_dim(model: onnx.ModelProto, frames: int) -> None:
+def pin_windows_dim(model: onnx.ModelProto, windows: int, frames: int) -> None:
     for dim in model.graph.input[0].type.tensor_type.shape.dim:
         if dim.HasField("dim_param"):
-            value = 1 if dim.dim_param == "windows" else frames
+            value = windows if dim.dim_param == "windows" else frames
             dim.dim_param = ""
             dim.dim_value = value
 
@@ -111,15 +122,21 @@ def capture_shapes(
 def main() -> None:
     args = parse_args()
     model = onnx.load(args.model)
-    pin_windows_dim(model, args.frames)
+    feed_shape = (
+        [int(d) for d in args.shape.split(",")]
+        if args.shape
+        else [args.windows, args.frames, 128]
+    )
+    if feed_shape[0] != args.windows:
+        raise SystemExit(
+            f"--shape batch {feed_shape[0]} does not match --windows {args.windows}"
+        )
+    pin_windows_dim(model, args.windows, args.frames)
     watch_ops = {op for op in args.ops.split(",") if op}
     expose_probe_outputs(model, watch_ops)
     onnx.save(model, args.probe)
 
     session = ort.InferenceSession(args.probe, providers=["CPUExecutionProvider"])
-    feed_shape = (
-        [int(d) for d in args.shape.split(",")] if args.shape else [1, args.frames, 128]
-    )
     feed = np.random.default_rng(7).standard_normal(feed_shape, dtype=np.float32) * 0.5
     shapes = capture_shapes(session, feed, args.input)
     Path(args.out).write_text(json.dumps(shapes), encoding="utf-8")
