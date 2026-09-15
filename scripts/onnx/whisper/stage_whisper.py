@@ -5,10 +5,10 @@ repo needs only the q4 encoder + merged decoder plus the tokenizer/config JSON.
 This copies exactly that set into `deps/whisper-large-v3-turbo-onnx/` (the folder
 `publish_whisper.py` uploads).
 
-The encoder is checked against `mobile_encoder.verify` on the way through: a
-stock export cannot run on several mobile GPUs and returns wrong answers on
-others, and both faults are silent at runtime. Staging refuses rather than let
-such a graph reach the publish repo.
+The encoder is checked against `mobile_encoder.verify` and both decoders against
+`mobile_decoder.verify` on the way through: a stock export cannot run on several
+mobile GPUs and returns wrong answers on others, and the faults are silent at
+runtime. Staging refuses rather than let such a graph reach the publish repo.
 
     uv run python scripts/onnx/whisper/stage_whisper.py \
       --export tmp/whisper-export/openai/whisper-large-v3-turbo
@@ -22,6 +22,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import mobile_decoder
 import mobile_encoder
 import onnx
 
@@ -29,6 +30,7 @@ with contextlib.suppress(Exception):
     sys.stdout.reconfigure(encoding="utf-8")
 
 ENCODER = "encoder_model_q4.onnx"
+DECODERS = ["decoder_model_merged_fp16.onnx", "decoder_model_merged_q4.onnx"]
 
 # Repo layout: <root>/music/musetric-toolkit/scripts/onnx/whisper/stage_whisper.py
 # and <root>/deps/whisper-large-v3-turbo-onnx — so parents[5] is <root>.
@@ -49,6 +51,7 @@ PUBLISH_FILES = [
     "merges.txt",
     "normalizer.json",
     "encoder_model_q4.onnx",
+    "decoder_model_merged_fp16.onnx",
     "decoder_model_merged_q4.onnx",
 ]
 
@@ -82,6 +85,17 @@ def main() -> None:
             f"run mobile_encoder.py over it before staging"
         )
     print(f"checked {ENCODER}: mobile-safe")
+
+    for name in DECODERS:
+        decoder = source_path(export, name)
+        reasons = mobile_decoder.verify(onnx.load(str(decoder)))
+        if reasons:
+            listing = "\n  ".join(reasons)
+            raise SystemExit(
+                f"{decoder} would compute wrong on a mobile GPU:\n  {listing}\n"
+                f"run mobile_decoder.py over it before staging"
+            )
+        print(f"checked {name}: mobile-safe")
 
     for rel in PUBLISH_FILES:
         source = source_path(export, rel)

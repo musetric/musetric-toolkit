@@ -106,6 +106,27 @@ affected adapter goes from visibly wrong output to what a healthy one reports.
 The index table is static, so the rewrite pins the encoder to batch 1 - which is
 what the runtime feeds anyway, one 30-second window at a time.
 
+## Make the decoder compute correctly on mobile GPUs (required)
+
+The WebGPU `MatMul` kernel that packs its operands into vec4 is taken whenever
+the inner and the last extent are both multiples of four. On Adreno 600-series
+adapters it returns garbage when the left operand has few rows and the last
+extent is not a multiple of 32 - in float16 and float32 alike. Every decoder
+attention score is such a product: `Q [heads, 1 or prompt, 64]` against
+`K^T [heads, 64, keys]`, so self-attention breaks on every fourth step and
+cross-attention (1500 keys) on every step, and the cache carries the error on.
+
+`mobile_decoder.py` runs `pad_attention_scores.py` over both merged decoders: when
+the key length is a multiple of four it appends one zero key column before the
+product and slices it off after, so the provider takes its scalar kernel. The
+CPU output is bit-identical; `stage_whisper.py` refuses a decoder without it.
+
+```bash
+uv run python scripts/onnx/whisper/mobile_decoder.py \
+  --input  deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx \
+  --output deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx
+```
+
 ### Running a single pass
 
 Each pass is still its own script with the same `--input`/`--output` interface,
@@ -115,6 +136,7 @@ which is what you want when bisecting a graph or trying a different block size:
 uv run python scripts/onnx/whisper/block_attention.py --input X --output Y --query-block 250
 uv run python scripts/onnx/whisper/conv_to_matmul.py --input X --output Y
 uv run python scripts/onnx/whisper/transpose_to_gather.py --input X --output Y
+uv run python scripts/onnx/whisper/pad_attention_scores.py --input X --output Y
 ```
 
 ## Publish
