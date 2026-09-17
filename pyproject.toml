@@ -20,7 +20,7 @@ dependencies = [
     "soundfile==0.14.0",
     "nnAudio==0.3.4",
     "librosa==0.11.0",
-    "onnxruntime-gpu==1.29.0",
+    "onnxruntime-gpu==1.30.0",
 ]
 
 [project.scripts]
