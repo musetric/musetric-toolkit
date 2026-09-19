@@ -13,12 +13,16 @@ operators:
 - ConvTranspose with a non-overlapping kernel (kernel == stride) becomes one
   weight-left MatMul per kernel offset; the offsets are interleaved into the
   upsampled plane with Concat + Reshape.
+- With --max-columns, a Conv whose output plane has more positions than that is
+  computed band by band of output rows and the bands are joined with Concat, so
+  no single MatMul covers the whole full-resolution plane.
 
 The graph is pinned to batch 1 and the input shape of the source graph.
 
 Usage:
     uv run python scripts/onnx/kara2/rewrite_static_adreno.py \
-        --model UVR_MDXNET_KARA_2.onnx --out kara2_adreno.onnx --check
+        --model UVR_MDXNET_KARA_2.onnx --out kara2_adreno.onnx \
+        --max-columns 65536 --check
 """
 
 import argparse
@@ -42,6 +46,7 @@ class RewriteContext:
     nodes: list[onnx.NodeProto] = field(default_factory=list)
     constants: list[onnx.TensorProto] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
+    max_columns: int = 0
 
     def constant(self, name: str, values: np.ndarray) -> str:
         self.constants.append(numpy_helper.from_array(values, name))
@@ -62,6 +67,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, help="source KARA2 .onnx")
     parser.add_argument("--out", required=True, help="rewritten .onnx output")
+    parser.add_argument(
+        "--max-columns",
+        type=int,
+        default=0,
+        help="cut every Conv whose output plane has more positions than this "
+        "into bands of output rows (0 = off). Exact: every position is computed "
+        "by the same arithmetic. It shortens the full-resolution MatMuls, which "
+        "a mobile GPU otherwise runs 16 at a time in one uninterruptible submit.",
+    )
     parser.add_argument(
         "--check",
         action="store_true",
@@ -122,50 +136,67 @@ def rewrite_conv(ctx: RewriteContext, node: onnx.NodeProto) -> None:
             "Pad", [source, pads, zero], f"{node.name}/padded", mode="constant"
         )
 
-    flat_shape = ctx.shape(f"{node.name}/flat_shape", [c_in, out_h * out_w])
+    columns = out_h * out_w
+    bands = 1
+    if ctx.max_columns and columns > ctx.max_columns:
+        bands = -(-columns // ctx.max_columns)
+    band_rows = -(-out_h // bands)
     whole_plane = (
-        kernel_h == 1
+        bands == 1
+        and kernel_h == 1
         and kernel_w == 1
         and stride_h == 1
         and stride_w == 1
         and (padded_h, padded_w) == (out_h, out_w)
     )
-    summed = ""
-    for row in range(kernel_h):
-        for col in range(kernel_w):
-            prefix = f"{node.name}/k{row}{col}"
-            patch = source
-            if not whole_plane:
-                starts = ctx.shape(f"{prefix}/starts", [row, col])
-                ends = ctx.shape(
-                    f"{prefix}/ends",
-                    [
-                        row + stride_h * (out_h - 1) + 1,
-                        col + stride_w * (out_w - 1) + 1,
-                    ],
+    bias = ""
+    kernels: dict[tuple[int, int], str] = {}
+    pieces = []
+    for band, first in enumerate(range(0, out_h, band_rows)):
+        rows = min(band_rows, out_h - first)
+        name = node.name if bands == 1 else f"{node.name}/b{band}"
+        flat_shape = ctx.shape(f"{name}/flat_shape", [c_in, rows * out_w])
+        summed = ""
+        for row in range(kernel_h):
+            for col in range(kernel_w):
+                prefix = f"{name}/k{row}{col}"
+                patch = source
+                if not whole_plane:
+                    start = row + stride_h * first
+                    starts = ctx.shape(f"{prefix}/starts", [start, col])
+                    ends = ctx.shape(
+                        f"{prefix}/ends",
+                        [
+                            start + stride_h * (rows - 1) + 1,
+                            col + stride_w * (out_w - 1) + 1,
+                        ],
+                    )
+                    axes = ctx.shape(f"{prefix}/axes", [2, 3])
+                    steps = ctx.shape(f"{prefix}/steps", [stride_h, stride_w])
+                    patch = ctx.node(
+                        "Slice", [source, starts, ends, axes, steps], f"{prefix}/slice"
+                    )
+                flat = ctx.node("Reshape", [patch, flat_shape], f"{prefix}/flat")
+                if (row, col) not in kernels:
+                    kernels[row, col] = ctx.constant(
+                        f"{prefix}/w", np.ascontiguousarray(weight[:, :, row, col])
+                    )
+                kernel = kernels[row, col]
+                product = ctx.node("MatMul", [kernel, flat], f"{prefix}/mm")
+                summed = (
+                    ctx.node("Add", [summed, product], f"{prefix}/sum")
+                    if summed
+                    else product
                 )
-                axes = ctx.shape(f"{prefix}/axes", [2, 3])
-                steps = ctx.shape(f"{prefix}/steps", [stride_h, stride_w])
-                patch = ctx.node(
-                    "Slice", [source, starts, ends, axes, steps], f"{prefix}/slice"
-                )
-            flat = ctx.node("Reshape", [patch, flat_shape], f"{prefix}/flat")
-            kernel = ctx.constant(
-                f"{prefix}/w", np.ascontiguousarray(weight[:, :, row, col])
-            )
-            product = ctx.node("MatMul", [kernel, flat], f"{prefix}/mm")
-            summed = (
-                ctx.node("Add", [summed, product], f"{prefix}/sum")
-                if summed
-                else product
-            )
-
-    bias = ctx.constant(
-        f"{node.name}/bias", ctx.weight(node.input[BIAS_INPUT]).reshape(c_out, 1)
-    )
-    biased = ctx.node("Add", [summed, bias], f"{node.name}/biased")
-    out_shape = ctx.shape(f"{node.name}/out_shape", [1, c_out, out_h, out_w])
-    ctx.node("Reshape", [biased, out_shape], node.output[0])
+        bias = bias or ctx.constant(
+            f"{node.name}/bias", ctx.weight(node.input[BIAS_INPUT]).reshape(c_out, 1)
+        )
+        biased = ctx.node("Add", [summed, bias], f"{name}/biased")
+        out_shape = ctx.shape(f"{name}/out_shape", [1, c_out, rows, out_w])
+        target = node.output[0] if bands == 1 else f"{name}/out"
+        pieces.append(ctx.node("Reshape", [biased, out_shape], target))
+    if bands > 1:
+        ctx.node("Concat", pieces, node.output[0], axis=2)
 
 
 def rewrite_conv_transpose(ctx: RewriteContext, node: onnx.NodeProto) -> None:
@@ -218,12 +249,13 @@ REWRITES = {
 }
 
 
-def rewrite(model: onnx.ModelProto) -> onnx.ModelProto:
+def rewrite(model: onnx.ModelProto, max_columns: int = 0) -> onnx.ModelProto:
     pin_batch(model)
     graph = model.graph
     ctx = RewriteContext(
         shapes=static_shapes(model),
         initializers={init.name: init for init in graph.initializer},
+        max_columns=max_columns,
     )
     for node in graph.node:
         handler = REWRITES.get(node.op_type)
@@ -276,7 +308,7 @@ def main() -> None:
         1,
         *[dim.dim_value for dim in model.graph.input[0].type.tensor_type.shape.dim[1:]],
     ]
-    result = rewrite(model)
+    result = rewrite(model, args.max_columns)
     onnx.save(result, args.out)
     size = Path(args.out).stat().st_size / 1e6
     print(f"saved {args.out}: {len(result.graph.node)} nodes, {size:.1f} MB")
