@@ -258,6 +258,24 @@ class RowChunkedFeedForward(nn.Module):
         return torch.cat([self.net(c) for c in x.chunk(self.parts, dim=0)], dim=0)
 
 
+class RowChunkedLinear(nn.Module):
+    """Run a linear projection over row chunks instead of the whole activation.
+
+    Exact for the same reason as RowChunkedFeedForward: every output row comes
+    from the same arithmetic. The q/k/v and output projections of a layer see
+    all T x 60 rows at once, which on Adreno 660 is one dispatch of about 200 ms
+    each, the longest of a run once the feed-forwards are chunked.
+    """
+
+    def __init__(self, linear: nn.Module, parts: int) -> None:
+        super().__init__()
+        self.linear = linear
+        self.parts = parts
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.cat([self.linear(c) for c in x.chunk(self.parts, dim=0)], dim=0)
+
+
 def _attention_forward_unfused(self: Attention, x: torch.Tensor) -> torch.Tensor:
     """Attention.forward with the fused qkv projection replaced by three."""
     x = self.norm(x)
@@ -274,7 +292,9 @@ def _attention_forward_unfused(self: Attention, x: torch.Tensor) -> torch.Tensor
     return self.to_out(out)
 
 
-def split_heavy_projections(model: MelBandRoformer, parts: int) -> tuple[int, int]:
+def split_heavy_projections(
+    model: MelBandRoformer, parts: int, projection_parts: int = 1
+) -> tuple[int, int]:
     """Cut the two longest matmuls of every transformer layer into shorter ones.
 
     Feed-forwards are chunked by rows into `parts`. The fused qkv projection is
@@ -299,7 +319,17 @@ def split_heavy_projections(model: MelBandRoformer, parts: int) -> tuple[int, in
         for name, index in (("to_q", 0), ("to_k", 1), ("to_v", 2)):
             linear = nn.Linear(module.to_qkv.in_features, inner, bias=False)
             linear.weight.data.copy_(weight[index * inner : (index + 1) * inner])
-            setattr(module, name, linear)
+            setattr(
+                module,
+                name,
+                (
+                    RowChunkedLinear(linear, projection_parts)
+                    if projection_parts > 1
+                    else linear
+                ),
+            )
+        if projection_parts > 1:
+            module.to_out[0] = RowChunkedLinear(module.to_out[0], projection_parts)
         del module.to_qkv
         module.forward = _attention_forward_unfused.__get__(module, Attention)
         attentions += 1
@@ -451,6 +481,15 @@ def main() -> None:
         "part of a run that a queue-level flush threshold cannot break up.",
     )
     p.add_argument(
+        "--split-projections",
+        type=int,
+        default=0,
+        help="with --split-rows, also chunk the q/k/v and output projections of "
+        "every attention into this many row groups (0 = off). Exact like "
+        "--split-rows; it shortens the matmuls that --split-rows leaves at full "
+        "height, the longest dispatches of a run on Adreno 660.",
+    )
+    p.add_argument(
         "--core-only",
         action="store_true",
         help="export the web core (stft_repr -> per-bin masks), NOT the full "
@@ -474,10 +513,17 @@ def main() -> None:
             f"(was {60 * 8 * T * T * 2 / 1048576:.1f} MiB)"
         )
     if args.split_rows:
-        feeds, attentions = split_heavy_projections(model, args.split_rows)
+        feeds, attentions = split_heavy_projections(
+            model, args.split_rows, max(args.split_projections, 1)
+        )
         print(
             f"split {feeds} feed-forwards into {args.split_rows} row groups, "
             f"unfused {attentions} qkv projections"
+            + (
+                f" and split them into {args.split_projections} row groups"
+                if args.split_projections > 1
+                else ""
+            )
         )
     norms, attends = cap_dispatch_rows(model)
     print(
