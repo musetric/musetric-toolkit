@@ -1,5 +1,5 @@
 # ruff: noqa: T201
-"""Static rewrite of beat_this that avoids the Adreno 6xx broken WebGPU kernels.
+"""Static rewrite of ChordNet that avoids the broken Adreno WebGPU kernels.
 
 - Transpose families that select the broken shared-tile kernel
   ((0,2,1), (0,1,3,2), (0,3,1,2), (0,3,2,1), (2,0,1)) become
@@ -9,6 +9,10 @@
 - Conv becomes Pad + Reshape + Gather(im2col idx) + MatMul(reshaped weights,
   bias added back). Verified faithful to the original Conv within fp32
   accumulation noise.
+- A four-dimensional MatMul folds its two batch axes into one, and a MatMul
+  whose constant weight has a width that is not a multiple of four is widened
+  with zero columns and sliced back. Both shapes return wrong values on Adreno
+  750 while the shapes they become are exact there.
 
 Tensor shapes come from `capture_shapes.py` because ONNX shape inference
 cannot resolve runtime-computed Reshape shapes.
@@ -51,6 +55,9 @@ REPLACE_PERMS = {
     (1, 0, 2),
 }
 CONV_BIAS_INPUT = 2
+RANK_2D = 2
+RANK_4D = 4
+MATMUL_WIDTH_MULTIPLE = 4
 
 
 @dataclass
@@ -64,6 +71,8 @@ class RewriteContext:
     )
     replaced_transposes: int = 0
     replaced_convs: int = 0
+    replaced_matmuls: int = 0
+    padded_matmuls: int = 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,6 +83,9 @@ def parse_args() -> argparse.Namespace:
         "--shapes", required=True, help="shapes .json from capture_shapes"
     )
     parser.add_argument("--no-conv", action="store_true", help="keep Conv nodes")
+    parser.add_argument(
+        "--no-matmul", action="store_true", help="keep four-dimensional MatMul nodes"
+    )
     parser.add_argument(
         "--no-transpose", action="store_true", help="keep Transpose nodes"
     )
@@ -137,6 +149,112 @@ def rewrite_transpose(
                 [f"{node.name}/gg", f"{node.name}/oshape"],
                 [node.output[0]],
                 name=node.name + "_ro",
+            ),
+        ]
+    )
+    return True
+
+
+def rewrite_matmul(ctx: RewriteContext, node: onnx.NodeProto) -> bool:
+    """Compute a four-dimensional MatMul as a three-dimensional one.
+
+    On Adreno 750 the WebGPU MatMul kernel returns wrong values for some
+    four-dimensional extents while the same extents in three dimensions are
+    exact, which is what makes the chord attention disagree with wasm there.
+    Folding the two batch axes into one is exact: a batched MatMul multiplies
+    each matrix of the batch on its own, whatever the batch is shaped like.
+    """
+    left = ctx.shapes.get(node.input[0])
+    right = ctx.shapes.get(node.input[1])
+    if left is None or right is None:
+        return False
+    if len(left) != RANK_4D or len(right) != RANK_4D or left[:2] != right[:2]:
+        return False
+    batch = left[0] * left[1]
+    folded = [
+        (f"{node.name}/lshape", [batch, left[2], left[3]]),
+        (f"{node.name}/rshape", [batch, right[2], right[3]]),
+        (f"{node.name}/oshape", [left[0], left[1], left[2], right[3]]),
+    ]
+    for name, dims in folded:
+        ctx.new_inits.append(
+            helper.make_tensor(name, TensorProto.INT64, [len(dims)], dims)
+        )
+    ctx.new_nodes.extend(
+        [
+            helper.make_node(
+                "Reshape",
+                [node.input[0], f"{node.name}/lshape"],
+                [f"{node.name}/left3d"],
+                name=node.name + "_rl",
+            ),
+            helper.make_node(
+                "Reshape",
+                [node.input[1], f"{node.name}/rshape"],
+                [f"{node.name}/right3d"],
+                name=node.name + "_rr",
+            ),
+            helper.make_node(
+                "MatMul",
+                [f"{node.name}/left3d", f"{node.name}/right3d"],
+                [f"{node.name}/mm3d"],
+                name=node.name + "_mm",
+            ),
+            helper.make_node(
+                "Reshape",
+                [f"{node.name}/mm3d", f"{node.name}/oshape"],
+                [node.output[0]],
+                name=node.name + "_ro",
+            ),
+        ]
+    )
+    return True
+
+
+def pad_matmul_width(ctx: RewriteContext, node: onnx.NodeProto) -> bool:
+    """Widen a constant MatMul weight to a multiple of four columns.
+
+    On Adreno 750 the WebGPU MatMul kernel returns wrong values when the output
+    width is not a multiple of four: the classifier of this model,
+    [16, 108, 144] x [144, 170], differs from wasm by 4.2 there, while the same
+    product at 168 or 172 columns is exact. The extra columns are zeros and the
+    result is sliced back, so every real column keeps its arithmetic.
+    """
+    weight = ctx.initializers.get(node.input[1])
+    if weight is None or len(weight.dims) != RANK_2D:
+        return False
+    width = weight.dims[1]
+    if width % MATMUL_WIDTH_MULTIPLE == 0:
+        return False
+    padded_width = width + MATMUL_WIDTH_MULTIPLE - width % MATMUL_WIDTH_MULTIPLE
+    values = numpy_helper.to_array(weight)
+    padded = np.zeros((weight.dims[0], padded_width), dtype=values.dtype)
+    padded[:, :width] = values
+    ctx.new_inits.append(numpy_helper.from_array(padded, f"{node.name}/wide"))
+    for name, dims in (
+        (f"{node.name}/from", [0]),
+        (f"{node.name}/to", [width]),
+        (f"{node.name}/axis", [-1]),
+    ):
+        ctx.new_inits.append(helper.make_tensor(name, TensorProto.INT64, [1], dims))
+    ctx.new_nodes.extend(
+        [
+            helper.make_node(
+                "MatMul",
+                [node.input[0], f"{node.name}/wide"],
+                [f"{node.name}/widened"],
+                name=node.name + "_mmw",
+            ),
+            helper.make_node(
+                "Slice",
+                [
+                    f"{node.name}/widened",
+                    f"{node.name}/from",
+                    f"{node.name}/to",
+                    f"{node.name}/axis",
+                ],
+                [node.output[0]],
+                name=node.name + "_slice",
             ),
         ]
     )
@@ -298,6 +416,20 @@ def main() -> None:
             if perm in REPLACE_PERMS and rewrite_transpose(ctx, node, perm):
                 ctx.replaced_transposes += 1
                 continue
+        if (
+            node.op_type == "MatMul"
+            and not args.no_matmul
+            and rewrite_matmul(ctx, node)
+        ):
+            ctx.replaced_matmuls += 1
+            continue
+        if (
+            node.op_type == "MatMul"
+            and not args.no_matmul
+            and pad_matmul_width(ctx, node)
+        ):
+            ctx.padded_matmuls += 1
+            continue
         if node.op_type == "Conv" and not args.no_conv and rewrite_conv(ctx, node):
             ctx.replaced_convs += 1
             print(f"conv {node.name}: rewritten")
@@ -321,7 +453,9 @@ def main() -> None:
     size_mb = Path(args.out).stat().st_size / 1e6
     print(
         f"saved {args.out}: transposes {ctx.replaced_transposes}, "
-        f"convs {ctx.replaced_convs}, {size_mb:.0f} MB, pinned {pinned}"
+        f"convs {ctx.replaced_convs}, matmuls {ctx.replaced_matmuls}, "
+        f"padded {ctx.padded_matmuls}, "
+        f"{size_mb:.0f} MB, pinned {pinned}"
     )
 
 

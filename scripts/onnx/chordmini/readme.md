@@ -97,15 +97,17 @@ exceeds `1e-4`.
 ## Static WebGPU rewrite
 
 `chordnet.onnx` as exported routes 79 of its Transposes to onnxruntime's
-shared-tile WebGPU kernel, which computes wrong logits on Adreno 6xx.
-`capture_shapes.py` records the runtime shapes of the exported graph and
-`rewrite_static_adreno.py` replaces those Transposes with constant-index
-Gathers. The published classifier is this rewrite:
+shared-tile WebGPU kernel, which computes wrong logits on Adreno 6xx, and its
+MatMul shapes hit two Adreno 750 defects of that provider. `capture_shapes.py`
+records the runtime shapes of the exported graph and `rewrite_static_adreno.py`
+replaces those Transposes with constant-index Gathers, folds the batch axes of
+every four-dimensional MatMul into one, and widens the classifier weight to a
+multiple of four columns. The published classifier is this rewrite:
 
 ```sh
 uv run --group export python scripts/onnx/chordmini/capture_shapes.py \
   --model <chordnet-export-dir>/chordnet.onnx --input features \
-  --frames 108 --windows 16 --shape 16,108,144 --ops Transpose \
+  --frames 108 --windows 16 --shape 16,108,144 --ops Transpose,MatMul \
   --out <shapes.json> --probe <probe.onnx>
 
 uv run --group export python scripts/onnx/chordmini/rewrite_static_adreno.py \
@@ -117,8 +119,26 @@ uv run --group export python scripts/onnx/roformer/dispatch_rows_audit.py \
 ```
 
 The build is deterministic: the batch-16 rewrite of the `fbd620e6` export comes
-out as `6907d39254c4…` on Windows and on macOS alike, and `--windows 1` rebuilds
-the earlier batch-1 graph node for node.
+out the same on Windows and on macOS alike, and `--windows 1` rebuilds the
+earlier batch-1 graph node for node.
+
+### What the MatMul rewrites are for
+
+On Adreno 750 the WebGPU MatMul kernel returns wrong values for two shapes this
+graph uses, deterministically and by units, while wasm on the same device is
+right:
+
+- four dimensions with the extents of the chord attention, which the fold into
+  three dimensions avoids; the same product in three dimensions is exact;
+- an output width that is not a multiple of four, which the classifier
+  `[16, 108, 144] x [144, 170]` has; padding it to 172 columns and slicing the
+  result back is exact, and the same product at 168 or 172 columns matches wasm
+  to 1.9e-6 while 170 differs by 4.2.
+
+Together they are what makes the chord logits match wasm on that GPU: the
+published rewrite differs from wasm by 3.13 there, with 386 of 1728 frames
+choosing another chord, and this one by 5.7e-6 with no frame changed. On
+Adreno 660 and on desktop the rewrites change no result and cost no time.
 
 The rewrite is exact against the exported graph (max |Δlogit| ~5e-6 on ORT
 CPU and on WebGPU) but static: every Gather index and Reshape target is baked
