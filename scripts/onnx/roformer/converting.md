@@ -59,8 +59,8 @@ uv sync --group export
 
 ## Build a Core
 
-Four steps: export, re-tree the wide `Concat`/`Split` nodes, audit the epsilon,
-audit the dispatch rows.
+Five steps: export, re-tree the wide `Concat`/`Split` nodes, audit the epsilon,
+audit the dispatch rows, point the graph at the published weights file.
 
 ```bash
 uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
@@ -68,7 +68,7 @@ uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
   --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
   --output tmp/models/core_t1100.onnx \
   --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100 --skip-gate \
-  --split-rows 4
+  --split-rows 8 --split-projections 4
 
 uv run --group export python scripts/onnx/roformer/split_concat_webgpu.py \
   --input tmp/models/core_t1100.onnx \
@@ -79,6 +79,11 @@ uv run --group export python scripts/onnx/roformer/fp16_epsilon_audit.py \
 
 uv run --group export python scripts/onnx/roformer/dispatch_rows_audit.py \
   tmp/models/syhft_core_t1100.onnx
+
+uv run python scripts/onnx/roformer/reuse_external_data.py \
+  --model tmp/models/syhft_core_t1100.onnx \
+  --reference published/syhft_core_t1100.onnx \
+  --out tmp/models/release/syhft_core_t1100.onnx
 ```
 
 What each flag is for:
@@ -95,10 +100,13 @@ What each flag is for:
 - `--all-fp16` drops the fp32 pins, which the fused RMSNorm makes safe. Without
   it the `[T, 60, 1536]` activations become 387 MiB fp32 tensors with a cast copy
   each at T = 1100.
-- `--split-rows 4` shortens the longest dispatches; see below.
+- `--split-rows 8 --split-projections 4` shortens the longest dispatches; see
+  below.
 - `split_concat_webgpu.py` re-trees wide `Concat`/`Split` to <=8-wide so every
   shader stays at <=9 storage buffers, under the strictest shipping cap
   (Dawn/Metal on macOS reports `maxStorageBuffersPerShaderStage = 10`).
+- `reuse_external_data.py` keeps the weights file of the published revision;
+  see below.
 
 ## Keep Row-Dispatched Kernels Under 65535 Rows
 
@@ -137,8 +145,9 @@ naive kernel that has the guard.
 
 ## Shorten the Longest Dispatches
 
-`--split-rows N` is aimed at mobile GPUs, and the published core is built with
-`--split-rows 4`. A run of this core is
+`--split-rows N` and `--split-projections N` are aimed at mobile GPUs, and the
+published core is built with `--split-rows 8 --split-projections 4`. A run of
+this core is
 dominated by a handful of very long matmuls: the feed-forward projections and
 the fused qkv projection of each layer are each a single dispatch tens of times
 longer than the median one. Nothing at the runtime level can break those up -- a
@@ -159,6 +168,16 @@ uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
   --skip-gate --split-rows 4
 ```
 
+`--split-rows` leaves the four projections of every attention -- q, k, v and
+the output -- at full height: `[T * 60, 384] x [384, 512]` and its reverse, 66000
+rows at T = 1100. Once the feed-forwards are chunked, those are the longest
+dispatches of a run, about 200 ms each on Adreno 660. `--split-projections N`
+chunks each of them into `N` row groups the same way. With
+`--split-rows 8 --split-projections 4` the worst wait of another GPU client
+during a paced run on Adreno 660 falls from about 650 ms to about 440 ms for
+2-4 % of run time; finer splits cost more on the desktop without a steady gain
+on the phones. The measurements are in musetric/musetric#894.
+
 Both rewrites are exact in fp16, because rows of a matmul are independent and
 the qkv split only skips a fusion. Splitting the *reduction* axis instead --
 which is the obvious way to cut the same matmul -- is not exact in fp16: it
@@ -169,6 +188,17 @@ because the wide intermediate is never built at full height.
 
 Run the same validation as any other core afterwards. Peak GPU memory falls
 rather than rises, and total time moves by about a percent.
+
+## Keep the Published Weights File
+
+A re-export with the same weights lays them out in another order, and the
+row-chunked projections keep their weight transposes as `Transpose` nodes that
+the exporter otherwise folds into constants. The weights are the same, but the
+`.onnx.data` is not, and an app that pins the new revision downloads 741 MB
+again. `reuse_external_data.py` folds each such transpose into the matrix the
+published core stores and points every tensor of the new graph at the offset of
+the same bytes in the published weights file. It refuses when any tensor is not
+found there. Only the `.onnx` then changes between revisions.
 
 **The epsilon is dtype-dependent and the audit is not optional.** In fp16 the
 `RMSNormalization` reciprocal `1/sqrt(mean(x^2) + eps)` is cast back to fp16, so
