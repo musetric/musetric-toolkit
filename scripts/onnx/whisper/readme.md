@@ -116,10 +116,21 @@ attention score is such a product: `Q [heads, 1 or prompt, 64]` against
 `K^T [heads, 64, keys]`, so self-attention breaks on every fourth step and
 cross-attention (1500 keys) on every step, and the cache carries the error on.
 
-`mobile_decoder.py` runs `pad_attention_scores.py` over both merged decoders: when
-the key length is a multiple of four it appends one zero key column before the
-product and slices it off after, so the provider takes its scalar kernel. The
-CPU output is bit-identical; `stage_whisper.py` refuses a decoder without it.
+`mobile_decoder.py` runs `pad_attention_scores.py` over both merged decoders: it
+appends one zero column to the query and one zero row to the transposed key, so
+the product runs with an inner extent of 65 and the provider takes its scalar
+kernel. The added row and column multiply to zero, the output keeps its shape,
+and the CPU output is bit-identical; `stage_whisper.py` refuses a decoder
+without it.
+
+The padding is a constant, and that is the point. The earlier form padded the
+key length instead, which has to be read at run time (`Shape -> Gather -> Mod ->
+Equal`); shape arithmetic runs on the CPU provider, so it split each step's GPU
+work and forced a synchronisation around every attention. Measured on 30 s of
+audio: 64.1 ms per token on a desktop NVIDIA against 37.0 ms with the constant
+form and 33.5 ms with no padding at all, and 36 queue submissions per token
+against 23. On the Adreno 660 the same change takes a token from 324.9 to
+266.3 ms with the text unchanged.
 
 ```bash
 uv run python scripts/onnx/whisper/mobile_decoder.py \
