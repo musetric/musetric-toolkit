@@ -138,6 +138,32 @@ uv run python scripts/onnx/whisper/mobile_decoder.py \
   --output deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx
 ```
 
+## Narrow the cross-attention outputs (optional)
+
+`generate` asks the decoder for the cross-attention weights of every layer and
+gets all twenty heads of all four: `[batch, 20, tokens, 1500]` each, cast to
+float32 on the way out. Word times read six of those eighty head slices, the
+ones `alignment_heads` names in the generation config; the rest is copied off
+the device and thrown away.
+
+`trim_cross_attentions.py` narrows each output to the heads that config names -
+here one, one, two and four - and rewrites `alignment_heads` to the new
+positions. Layers no head is taken from keep one, because the pipeline
+concatenates one tensor per decoder layer before it indexes them. The CPU output
+is bit-identical on both branches, and so are the word times on a GPU.
+
+Measured on 30 s of audio: on the Adreno 660 a token goes from 197.2 to
+174.0 ms and the window from 34.8 to 32.9 s; on the Adreno 750 and on a desktop
+NVIDIA the step is unchanged and only the JavaScript that assembles the weights
+gets cheaper, by 185 ms and 55 ms per window.
+
+```bash
+uv run python scripts/onnx/whisper/trim_cross_attentions.py   --input  deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx   --output deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx   --generation-config deps/whisper-large-v3-turbo-onnx/generation_config.json
+```
+
+The config is rewritten in place, so the pass runs once per repository: a second
+run over an already narrowed graph would remap heads that are no longer there.
+
 ### Running a single pass
 
 Each pass is still its own script with the same `--input`/`--output` interface,
