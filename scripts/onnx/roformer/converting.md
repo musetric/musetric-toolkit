@@ -143,6 +143,22 @@ static input shape, and `dispatch_rows_audit.py` re-checks any artifact. The
 `Reduce*` count is an upper bound: onnxruntime runs some reductions through a
 naive kernel that has the guard.
 
+## Keep the Rotary Tables in fp32
+
+The exporter applies this on every build; there is no flag. The rotary
+embedding exports its angle cache, position times frequency, as an initializer
+that the graph slices and feeds to `Cos` and `Sin`. The fp16 conversion would
+store those angles in fp16, whose step is 0.5 rad near the end of an 1100-frame
+window, and every rotation there would come out wrong. `fold_rotary_tables`
+computes the cosines and sines in fp32 before the conversion and stores them as
+constants; values in [-1, 1] keep 5e-4 in fp16.
+
+On the loudest 1100-frame window of every CC BY and CC BY-SA track of
+[JamendoLyrics](https://github.com/f90/jamendolyrics), thirteen songs, an
+export of `Aname-Tommy/Mel-Band-Roformer_Duality` scores 40.4-53.1 dB against
+the torch model with the angles in fp16 and 63.7-71.0 dB with the tables
+folded. Cores exported before this change carry the angles in fp16.
+
 ## Shorten the Longest Dispatches
 
 `--split-rows N` and `--split-projections N` are aimed at mobile GPUs, and the
