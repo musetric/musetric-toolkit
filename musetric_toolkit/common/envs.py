@@ -2,10 +2,10 @@ from pathlib import Path
 
 # Third-party model/data sources used by the audio workflows.
 # See thirdPartyNotices.md for source, license, and attribution details.
-model_checkpoint_url = "https://huggingface.co/SYH99999/MelBandRoformerBigSYHFTV1Fast/resolve/main/MelBandRoformerBigSYHFTV1.ckpt"
-model_config_url = "https://huggingface.co/SYH99999/MelBandRoformerBigSYHFTV1Fast/resolve/main/config.yaml"
+model_checkpoint_url = "https://huggingface.co/Aname-Tommy/Mel-Band-Roformer_Duality/resolve/07a189ffdceb69db0ddacc5175569bef59850016/duality_v1.ckpt"
+model_config_url = "https://huggingface.co/Aname-Tommy/Mel-Band-Roformer_Duality/resolve/07a189ffdceb69db0ddacc5175569bef59850016/config_v1.yaml"
 
-model_mel_band_roformer_dir = "mel_band_roformer_big_syhft_v1"
+model_mel_band_roformer_dir = "mel_band_roformer_duality"
 model_checkpoint_rel_path = Path(model_mel_band_roformer_dir) / "model.ckpt"
 model_config_rel_path = Path(model_mel_band_roformer_dir) / "config.yaml"
 

@@ -92,13 +92,25 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## MelBandRoformerBigSYHFTV1Fast
+## Aname-Tommy/Mel-Band-Roformer_Duality
 
-- Source: https://huggingface.co/SYH99999/MelBandRoformerBigSYHFTV1Fast
-- Usage: checkpoint and config downloaded at runtime for vocal/instrumental separation.
-- Local files: `musetric_toolkit/common/envs.py`, `musetric_toolkit/separate_audio/main.py`, `musetric_toolkit/separate_audio/mel_band_roformer_separator.py`.
-- License: MIT.
+- Source: https://huggingface.co/Aname-Tommy/Mel-Band-Roformer_Duality, revision `07a189ffdceb69db0ddacc5175569bef59850016`.
+- Usage: checkpoint (`duality_v1.ckpt`) and config (`config_v1.yaml`) downloaded at runtime for vocal/instrumental separation, and the source of the ONNX core exported by `scripts/onnx/roformer`.
+- Local files: `musetric_toolkit/common/envs.py`, `musetric_toolkit/separate_audio/main.py`, `musetric_toolkit/separate_audio/mel_band_roformer_separator.py`, `scripts/onnx/roformer/converting.md`.
+- License: Apache-2.0.
 - License source: Hugging Face model card metadata.
+- Lineage: fine-tuned from SYH99999/MelBandRoformerMergedSYHFTBeta1 (MIT), which builds on KimberleyJSN/melbandroformer (MIT); checked by comparing the weights.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+these files except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
 
 ## python-audio-separator
 
