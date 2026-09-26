@@ -65,6 +65,25 @@ musetric-chords \
   --log-level info  # debug|info|warn|error (default: info)
 ```
 
+Extract a reference pitch track with RMVPE and a global Viterbi decode. It is a
+measurement reference for the pitch tracker in Musetric, not a processing step.
+
+```bash
+musetric-pitch \
+  --audio-path /path/to/vocals.wav \  # input audio file, any format ffmpeg reads
+  --result-path /path/to/f0.csv \  # output CSV: time_s,f0_hz,confidence,trusted
+  --from-seconds 60 \  # optional start of the analysed range
+  --to-seconds 90 \  # optional end of the analysed range
+  --hop-ms 5 \  # frame step (default: 5)
+  --models-path /path/to/models \  # base directory for downloaded models
+  --log-level info  # debug|info|warn|error (default: info)
+```
+
+`f0_hz` is 0 on unvoiced frames, `confidence` is the salience peak of the
+frame and `trusted` marks frames that a comparison should score: confident
+voiced frames grown through pitch-continuous neighbours, after an energy gate
+against near-silent tails.
+
 ## License
 
 Musetric Toolkit is [MIT licensed](https://github.com/musetric/musetric/blob/main/license.md).
