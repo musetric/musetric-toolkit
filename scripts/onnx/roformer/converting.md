@@ -28,19 +28,20 @@ onnxruntime execution providers. The normal torch path remains unchanged.
 
 ## Prebuilt Artifacts (published)
 
-You do not have to rebuild anything. The core is published (MIT) at
-<https://huggingface.co/musetric/vocal-separation-roformer-onnx>:
+You do not have to rebuild anything. The core is published (Apache-2.0, from
+[`Aname-Tommy/Mel-Band-Roformer_Duality`](https://huggingface.co/Aname-Tommy/Mel-Band-Roformer_Duality))
+at <https://huggingface.co/musetric/aname-mel-band-roformer-duality-onnx>:
 
 | File | SHA256 |
 |---|---|
-| `syhft_core_t1100.onnx` | `88b51e87dd2fa02acecf95d880a3833c307bf780b101dd39021de7b821faec22` |
-| `syhft_core_t1100.onnx.data` | `648db04fce69e556bc1fb08486ffd7f7ac50d370b1c6026e42ffea9cd621a7ed` |
+| `duality_core_t1100.onnx` | `2f420979a600426417b48264785364cbd62d2d81d70037f99c62baffb837d96b` |
+| `duality_core_t1100.onnx.data` | `ba2a1daacde1608a57564c7bb24a3efe2f50388b2168143044019a6cbe3f21c6` |
 
 Download both files into `tmp/models` (the `.data` file must sit next to its graph):
 
 ```bash
-uv run hf download musetric/vocal-separation-roformer-onnx \
-  syhft_core_t1100.onnx syhft_core_t1100.onnx.data \
+uv run hf download musetric/aname-mel-band-roformer-duality-onnx \
+  duality_core_t1100.onnx duality_core_t1100.onnx.data \
   --local-dir tmp/models
 ```
 
@@ -59,31 +60,28 @@ uv sync --group export
 
 ## Build a Core
 
-Five steps: export, re-tree the wide `Concat`/`Split` nodes, audit the epsilon,
-audit the dispatch rows, point the graph at the published weights file.
+Four steps: export, re-tree the wide `Concat`/`Split` nodes, audit the epsilon,
+audit the dispatch rows. The checkpoint and config are the ones
+`musetric_toolkit/common/envs.py` downloads (`duality_v1.ckpt` and
+`config_v1.yaml` at the pinned revision).
 
 ```bash
 uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
-  --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
-  --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
+  --checkpoint tmp/models/mel_band_roformer_duality/model.ckpt \
+  --config tmp/models/mel_band_roformer_duality/config.yaml \
   --output tmp/models/core_t1100.onnx \
   --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100 --skip-gate \
   --split-rows 8 --split-projections 4
 
 uv run --group export python scripts/onnx/roformer/split_concat_webgpu.py \
   --input tmp/models/core_t1100.onnx \
-  --output tmp/models/syhft_core_t1100.onnx
+  --output tmp/models/duality_core_t1100.onnx
 
 uv run --group export python scripts/onnx/roformer/fp16_epsilon_audit.py \
-  tmp/models/syhft_core_t1100.onnx
+  tmp/models/duality_core_t1100.onnx
 
 uv run --group export python scripts/onnx/roformer/dispatch_rows_audit.py \
-  tmp/models/syhft_core_t1100.onnx
-
-uv run python scripts/onnx/roformer/reuse_external_data.py \
-  --model tmp/models/syhft_core_t1100.onnx \
-  --reference published/syhft_core_t1100.onnx \
-  --out tmp/models/release/syhft_core_t1100.onnx
+  tmp/models/duality_core_t1100.onnx
 ```
 
 What each flag is for:
@@ -105,8 +103,6 @@ What each flag is for:
 - `split_concat_webgpu.py` re-trees wide `Concat`/`Split` to <=8-wide so every
   shader stays at <=9 storage buffers, under the strictest shipping cap
   (Dawn/Metal on macOS reports `maxStorageBuffersPerShaderStage = 10`).
-- `reuse_external_data.py` keeps the weights file of the published revision;
-  see below.
 
 ## Keep Row-Dispatched Kernels Under 65535 Rows
 
@@ -177,8 +173,8 @@ anyway:
 
 ```bash
 uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
-  --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
-  --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
+  --checkpoint tmp/models/mel_band_roformer_duality/model.ckpt \
+  --config tmp/models/mel_band_roformer_duality/config.yaml \
   --output tmp/models/core_split4_t1100.onnx \
   --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100 \
   --skip-gate --split-rows 4
@@ -207,11 +203,21 @@ rather than rises, and total time moves by about a percent.
 
 ## Keep the Published Weights File
 
-A re-export with the same weights lays them out in another order, and the
-row-chunked projections keep their weight transposes as `Transpose` nodes that
-the exporter otherwise folds into constants. The weights are the same, but the
-`.onnx.data` is not, and an app that pins the new revision downloads 741 MB
-again. `reuse_external_data.py` folds each such transpose into the matrix the
+A re-export of weights that are already published lays them out in another
+order, and the row-chunked projections keep their weight transposes as
+`Transpose` nodes that the exporter otherwise folds into constants. The weights
+are the same, but the `.onnx.data` is not, and an app that pins the new revision
+downloads the weights again. Such a rebuild ends with one more step; the first
+export of new weights does not need it:
+
+```bash
+uv run python scripts/onnx/roformer/reuse_external_data.py \
+  --model tmp/models/duality_core_t1100.onnx \
+  --reference published/duality_core_t1100.onnx \
+  --out tmp/models/release/duality_core_t1100.onnx
+```
+
+`reuse_external_data.py` folds each such transpose into the matrix the
 published core stores and points every tensor of the new graph at the offset of
 the same bytes in the published weights file. It refuses when any tensor is not
 found there. Only the `.onnx` then changes between revisions.
@@ -237,8 +243,8 @@ Python:
 # needs --device cuda: the CPU torch forward segfaults on the 2.3 GB T²
 # attention sim, while flash SDPA on cuda never materializes it.
 uv run python scripts/onnx/roformer/validate_full_onnx.py \
-  --checkpoint tmp/models/MelBandRoformerBigSYHFTV1.ckpt \
-  --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
+  --checkpoint tmp/models/mel_band_roformer_duality/model.ckpt \
+  --config tmp/models/mel_band_roformer_duality/config.yaml \
   --source tmp/sample.flac --out-dir tmp/bench_out_t1100 --frames 1100 --device cuda
 ```
 
@@ -250,15 +256,15 @@ measures SNR; this repository does not carry one.
 ## Inspect Ops
 
 ```bash
-uv run --group export python scripts/onnx/roformer/op_audit.py tmp/models/syhft_core_t1100.onnx
+uv run --group export python scripts/onnx/roformer/op_audit.py tmp/models/duality_core_t1100.onnx
 ```
 
 ## Run Python ONNX Inference
 
 ```bash
 uv run --group export python scripts/onnx/roformer/infer_separator.py \
-  --model tmp/models/syhft_core_t1100.onnx \
-  --config tmp/models/config_vocals_mel_band_roformer_big_v1_ft.yaml \
+  --model tmp/models/duality_core_t1100.onnx \
+  --config tmp/models/mel_band_roformer_duality/config.yaml \
   --source path/to/input.wav \
   --target-output tmp/out/target.flac \
   --residual-output tmp/out/residual.flac

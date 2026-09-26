@@ -15,9 +15,9 @@ consumer; row-chunked projections give it several, and then it stays a node.
 
 Usage:
     uv run python scripts/onnx/roformer/reuse_external_data.py \
-        --model new/syhft_core_t1100.onnx \
-        --reference published/syhft_core_t1100.onnx \
-        --out out/syhft_core_t1100.onnx
+        --model new/duality_core_t1100.onnx \
+        --reference published/duality_core_t1100.onnx \
+        --out out/duality_core_t1100.onnx
 """
 
 import argparse
