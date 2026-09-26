@@ -306,3 +306,35 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## RMVPE
+
+- Source: https://github.com/Dream-High/RMVPE (paper arXiv:2306.15412) and https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI (network definition and inference).
+- Usage: reference F0 extraction for measuring the Musetric pitch tracker (`musetric-pitch`); not part of any processing step of the app. The network definition is vendored; the checkpoint `rmvpe.pt` is downloaded at runtime from https://huggingface.co/lj1995/VoiceConversionWebUI, where it was trained and published by the RVC project (yxlllc and RVC-Boss) on MIR-1K, PTDB-TUG and M4Singer synthesis data.
+- Local files: `musetric_toolkit/pitch_audio/rmvpe/` (vendored network), `musetric_toolkit/pitch_audio/tracker.py`, `musetric_toolkit/common/envs.py`.
+- License: MIT for the RVC code and the Hugging Face repository; Apache-2.0 for the original RMVPE repository.
+- License source: vendored `musetric_toolkit/pitch_audio/rmvpe/LICENSE`, upstream `LICENSE` and the Hugging Face model card metadata.
+
+MIT License
+
+Copyright (c) 2023 liujing04
+Copyright (c) 2023 源文雨
+Copyright (c) 2023 Ftps
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

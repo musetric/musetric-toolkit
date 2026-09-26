@@ -21,3 +21,10 @@ mdx_model_data_url = (
 )
 mdx_model_data_dir = "mdx_model_data"
 mdx_model_data_rel_path = Path(mdx_model_data_dir) / "model_data_new.json"
+
+rmvpe_checkpoint_url = (
+    "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/"
+    "e6d0c1a17da07c33557852f9dfa2bd44cc75737d/rmvpe.pt"
+)
+rmvpe_dir = "rmvpe"
+rmvpe_checkpoint_rel_path = Path(rmvpe_dir) / "rmvpe.pt"
