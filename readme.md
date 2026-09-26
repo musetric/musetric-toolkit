@@ -84,6 +84,24 @@ frame and `trusted` marks frames that a comparison should score: confident
 voiced frames grown through pitch-continuous neighbours, after an energy gate
 against near-silent tails.
 
+Write the reference of one parity case: a step of Musetric with the original
+model in torch inside the app's own processing, our ONNX export on the CPU and
+the author's own inference. It is the reference side of the app's
+`measure:parity` script, not a processing step.
+
+```bash
+musetric-parity \
+  --step vocals \  # vocals|voices|rhythm|key|chords
+  --audio-path /path/to/input.wav \  # input audio file
+  --onnx /path/to/model.onnx \  # the app's pinned ONNX model of the step
+  --case-path /path/to/case \  # output directory: raw tensors and manifest.json
+  --models-path /path/to/models \  # base directory for downloaded models
+  --log-level info  # debug|info|warn|error (default: info)
+```
+
+Every stage boundary of the step is a raw little-endian file
+`<boundary>.<source>.bin`; `manifest.json` lists them with their dtype and shape.
+
 ## License
 
 Musetric Toolkit is [MIT licensed](https://github.com/musetric/musetric/blob/main/license.md).
