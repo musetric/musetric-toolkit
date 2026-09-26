@@ -677,6 +677,9 @@ def export(  # noqa: C901, PLR0913, PLR0915
             f"(fp16 IO, f32 inside, epsilon={rms_eps:g})"
         )
 
+    folded = fold_rotary_tables(proto.graph)
+    print(f"  folded {folded} rotary Cos/Sin tables into constants")
+
     if fp32:
         # Full-fp32 variant (experiment): no fp16 conversion, so no fp16<->fp32
         # boundary Casts at all. save_fp16 just writes external data (dtype-
@@ -778,6 +781,56 @@ def _rewrite_nodes(graph, remove: set, replace_at: dict) -> None:
         if n.name in remove:
             continue
         graph.node.append(n)
+
+
+def fold_rotary_tables(graph) -> int:
+    """Replace every Cos/Sin of a constant Slice with its value, computed in fp32.
+
+    The rotary embedding exports its angle cache, position times frequency, as an
+    initializer that the graph slices and feeds to Cos and Sin. The fp16 conversion
+    would store those angles in fp16, whose step is 0.5 rad at the far end of an
+    1100-frame window, and every rotation there would come out wrong. The cosines
+    and sines themselves sit in [-1, 1], where fp16 keeps them to 5e-4, so folding
+    them first loses nothing.
+    """
+    from onnx import numpy_helper  # noqa: PLC0415
+
+    producer, _ = _io_maps(graph)
+    inits = {i.name: i for i in graph.initializer}
+    folded, remove = 0, set()
+    for node in list(graph.node):
+        if node.op_type not in ("Cos", "Sin"):
+            continue
+        sl = producer.get(node.input[0])
+        if sl is None or sl.op_type != "Slice" or any(i not in inits for i in sl.input):
+            continue
+        data, starts, ends, *rest = (numpy_helper.to_array(inits[i]) for i in sl.input)
+        axes = rest[0] if rest else np.arange(len(starts))
+        steps = rest[1] if len(rest) > 1 else np.ones(len(starts), dtype=np.int64)
+        index = [slice(None)] * data.ndim
+        for a, b, e, st in zip(axes, starts, ends, steps, strict=True):
+            index[int(a)] = slice(int(b), int(e), int(st))
+        angles = data[tuple(index)].astype(np.float64)
+        value = (np.cos(angles) if node.op_type == "Cos" else np.sin(angles)).astype(
+            np.float32
+        )
+        graph.initializer.append(numpy_helper.from_array(value, node.output[0]))
+        remove.add(node.name)
+        folded += 1
+    _rewrite_nodes(graph, remove, {})
+    _, consumers = _io_maps(graph)
+    dead = {
+        n.name
+        for n in graph.node
+        if n.op_type == "Slice" and not any(consumers.get(o) for o in n.output)
+    }
+    _rewrite_nodes(graph, dead, {})
+    _, consumers = _io_maps(graph)
+    used = set(consumers) | {o.name for o in graph.output}
+    keep = [i for i in graph.initializer if i.name in used]
+    del graph.initializer[:]
+    graph.initializer.extend(keep)
+    return folded
 
 
 def _ensure_ms_opset(model) -> None:
