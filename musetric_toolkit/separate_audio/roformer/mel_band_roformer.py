@@ -1,7 +1,8 @@
 # Based on Mel-Band RoFormer implementation by Phil Wang (lucidrains)
 # Original: https://github.com/lucidrains/BS-RoFormer
+# License: MIT
 # Architecture variant compatible with ZFTurbo MSST / audio-separator checkpoints
-# (e.g. Mel-Band-Roformer_Duality). License: MIT
+# (e.g. Mel-Band-Roformer_Duality, whose weights are Apache-2.0).
 # Modified for Musetric project: beartype removed, attend import localized.
 # ruff: noqa: PLR0913, PLR0915, PLR2004, S101, E501
 # ruff: noqa: N802, N806, N812, B905, RUF007, F841, C901, PLR0912, SIM210
