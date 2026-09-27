@@ -173,9 +173,12 @@ one input of 26 and 60 windows:
 - OnePlus 9RT (Adreno 660): max |Δlogit| 5.7e-6, no mismatched logit or argmax,
   in both buffer cache modes; the exported graph deviates by 0.75 there;
 - desktop NVIDIA (D3D12): max |Δlogit| 6.7e-6;
-- Galaxy S24 Ultra (Adreno 750): every graph deviates, the exported one as
-  much as the rewrite (max |Δlogit| 1.99, one argmax of 2808 frames); the cause
-  is not the rewrite and is not known.
+- Galaxy S24 Ultra (Adreno 750): every graph deviated, the exported one as
+  much as the rewrite (max |Δlogit| 1.99, one argmax of 2808 frames). The cause
+  is the provider's `MatMul` on that GPU (musetric/musetric#891), which the
+  MatMul rewrites below avoid: the published graph is within 5.7e-6 of
+  onnxruntime's CPU provider there, with no argmax changed (the parity run of
+  musetric/musetric#974, onnxruntime-web 1.30.0).
 
 Re-check any other batch on the device before publishing it.
 
