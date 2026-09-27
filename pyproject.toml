@@ -30,6 +30,7 @@ musetric-rhythm = "musetric_toolkit.rhythm_audio.main_cli:main_cli"
 musetric-key = "musetric_toolkit.key_audio.main_cli:main_cli"
 musetric-chords = "musetric_toolkit.chords_audio.main_cli:main_cli"
 musetric-pitch = "musetric_toolkit.pitch_audio.main_cli:main_cli"
+musetric-parity = "musetric_toolkit.parity_audio.main_cli:main_cli"
 
 [tool.uv]
 # CUDA-only: resolve the torch stack from the CUDA 12.9 PyTorch index and lock
