@@ -2,8 +2,8 @@ import numpy as np
 
 from musetric_toolkit.common import envs
 from musetric_toolkit.common.model_files import ensure_model_file
+from musetric_toolkit.pitch_audio.energy import energy_gate
 from musetric_toolkit.pitch_audio.tracker import SAMPLE_RATE, load_tracker, track
-from musetric_toolkit.pitch_audio.trusted import energy_gate
 from musetric_toolkit.pitch_zoo.estimate import ModelContext, PitchEstimate
 
 HOP_SAMPLES = 80

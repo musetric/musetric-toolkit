@@ -899,8 +899,11 @@ dependencies = [
     { name = "pyyaml", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "rotary-embedding-torch", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "soundfile", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
+    { name = "swift-f0", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "torch", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "torchaudio", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
+    { name = "torchcrepe", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
+    { name = "torchfcpe", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "torchvision", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "whisperx", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
 ]
@@ -921,9 +924,6 @@ pitch-research = [
     { name = "penn", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "pesto-pitch", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "pyworld-prebuilt", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
-    { name = "swift-f0", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
-    { name = "torchcrepe", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
-    { name = "torchfcpe", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
 ]
 
 [package.metadata]
@@ -940,8 +940,11 @@ requires-dist = [
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "rotary-embedding-torch", specifier = "==0.8.9" },
     { name = "soundfile", specifier = "==0.14.0" },
+    { name = "swift-f0", specifier = "==0.3.0" },
     { name = "torch", specifier = "==2.8.0", index = "https://download.pytorch.org/whl/cu129" },
     { name = "torchaudio", specifier = "==2.8.0", index = "https://download.pytorch.org/whl/cu129" },
+    { name = "torchcrepe", specifier = "==0.0.24" },
+    { name = "torchfcpe", specifier = "==0.0.4" },
     { name = "torchvision", specifier = "==0.23.0", index = "https://download.pytorch.org/whl/cu129" },
     { name = "whisperx", specifier = "==3.8.6" },
 ]
@@ -962,9 +965,6 @@ pitch-research = [
     { name = "penn", specifier = "==1.0.0" },
     { name = "pesto-pitch", specifier = "==2.0.1" },
     { name = "pyworld-prebuilt", specifier = "==0.3.6.post1" },
-    { name = "swift-f0", specifier = "==0.3.0" },
-    { name = "torchcrepe", specifier = "==0.0.24" },
-    { name = "torchfcpe", specifier = "==0.0.4" },
 ]
 
 [[package]]

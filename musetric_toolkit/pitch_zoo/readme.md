@@ -1,9 +1,10 @@
 # Pitch zoo: checking the pitch reference
 
 The pitch bench of Musetric (musetric/musetric#969) scores the line of the
-Notes view against the reference of `musetric-pitch`. Where the reference is
-wrong, a tracker that is right there scores worse, and without ground truth
-nobody knows how often that happens. This package checks the reference: it
+Notes view against the reference of `musetric-pitch`, a combination of pitch
+models described below. Where the reference is wrong, a tracker that is right
+there scores worse, and without ground truth nobody knows how often that
+happens. This package checks the reference: it
 runs openly licensed pitch models side by side, converts openly licensed
 ground truth, scores the models, the reference and the trackers of the app
 with the metrics of the bench, and draws the windows worth looking at. Every
@@ -104,6 +105,41 @@ Known properties:
   two runs of RMVPE on the same audio differ by 0.001 Hz on a few percent of
   frames. Compare runs by their scores, not their bytes.
 
+## The reference of `musetric-pitch`
+
+`musetric-pitch` combines RMVPE, CREPE, SwiftF0 and FCPE, run on the same
+audio and put on the same grid:
+
+1. **Voicing**: a frame is voiced when the models that voice it hold at least
+   0.6 of the voicing weights, RMVPE 3 and the others 1 each, so RMVPE and at
+   least one more model must voice it. On the choir voices of Dagstuhl
+   ChoirSet CREPE, SwiftF0 and FCPE voice the neighbouring singers and RMVPE
+   does so least. RMVPE drops frames more than 18 dB below the tenth
+   percentile of its confident frames, the floor held between -55 and
+   -48 dB, which keeps the quiet ends of sung notes.
+2. **Pitch**: within each voiced run, every voiced model adds a Gaussian of
+   30 cents around its pitch on a 10 cent grid, scaled by its pitch weight,
+   RMVPE and FCPE 2, CREPE and SwiftF0 1; a Viterbi over that salience picks
+   the path, moving at most 100 cents per frame or jumping to the best bin of
+   the previous frame at a fixed cost, so that the path follows the majority
+   when a second source, such as a held backing note, sits in the stem. The
+   pitch is the weighted mean, in cents, of the models within 50 cents of the
+   path.
+3. **Trust**: a voiced frame is trusted when at least three models agree on
+   it within 50 cents plus the change of the pitch over one frame, so that
+   models a few milliseconds apart on a fast glide still agree, or when RMVPE
+   and CREPE agree and every other voiced model is at least 1000 cents below
+   them. On sung glides and high notes SwiftF0 and FCPE fall to a
+   subharmonic, often lagging on it; on the singing of vocadito and Dagstuhl
+   ChoirSet the upper pair is right in those frames, on the speech of
+   PTDB-TUG mostly the lower one. The other voiced frames stay in the output,
+   and the bench leaves them out; `disputes` lists them with the pitch of
+   every model.
+
+The weights and parameters live in `pitch_audio/ensemble.py` and were chosen
+with `tune` on the truth sets. `confidence` in the output is the share of the
+pitch weight that agrees with the path.
+
 ## Procedure
 
 Every step is a command; the data lives outside git, in a directory of your
@@ -156,6 +192,52 @@ by `--compare` are more than 50 cents from `--reference`;
 `--reference reference` draws the reference of the bench; on a truth set,
 `--reference truth` draws the ground truth.
 
+To change the reference, `tune` scores a grid of weights and parameters of
+the ensemble on the truth sets, next to every model alone, in four tables:
+the clean share, the trusted frames within 50 cents of the truth, the share
+of the voiced truth trusted and the false alarm. The grid is a JSON file;
+`anchors` are indices into `--models`:
+
+```json
+{
+  "voicing_weights": [[3, 1, 1, 1], [1, 1, 1, 1]],
+  "pitch_weights": [[2, 1, 1, 2], [1, 0, 0, 1]],
+  "anchors": [[0, 1], []],
+  "params": {"voicing_share": [0.5, 0.6], "jump_penalty": [4, 8]}
+}
+```
+
+```sh
+musetric-pitch-zoo tune --tracks-dirs $D/resynth-fcpe/tracks $D/vocadito/tracks $D/dcs/tracks $D/ptdb/tracks \
+  --models rmvpe crepe swiftf0 fcpe --grid grid.json --out $D/tune
+```
+
+A model with a pitch weight of 0 still votes on voicing and counts for trust
+but does not move the pitch.
+
+### Comparing commits
+
+Every command writes named CSVs next to each other, so two versions of the
+reference, or of a tracker, are compared by running each commit in turn into
+the same track directories under its own name, then scoring and drawing the
+two names:
+
+```sh
+git checkout <commit A>
+uv run musetric-pitch --audio-path $D/<set>/audio --out-dir $D/<set>/tracks --name reference-<A>
+git checkout <commit B>
+uv run musetric-pitch --audio-path $D/<set>/audio --out-dir $D/<set>/tracks --name reference-<B>
+
+musetric-pitch-zoo score --tracks-dir $D/<set>/tracks --models reference-<A> reference-<B>
+musetric-pitch-zoo plot --tracks-dir $D/<set>/tracks --audio-dir $D/<set>/audio \
+  --reference reference-<B> --compare reference-<A> --select differ --out-dir $D/plots/<A>-<B>
+```
+
+The trackers of the app take the same path with `measure:pitch extract --tag
+<tag>` of the bench, run from a checkout of each commit. A commit of
+`musetric-pitch` older than `--name` writes `reference.csv`; rename it after
+the run.
+
 ## Reading the scores
 
 The tables are the tables of the bench, one row per scored CSV, as means over
@@ -176,7 +258,8 @@ A model or a tracker has no trusted mask and trusts every voiced frame.
 - **Other singers.** A microphone that hears other singers (the rest of the
   quartet in Dagstuhl ChoirSet, backing vocals left in a lead stem) gives
   every model real voice to track. Where the target singer is silent, the
-  models voice the others; Dagstuhl ChoirSet measures it as false alarm.
+  models voice the others; Dagstuhl ChoirSet measures it as false alarm, and
+  the reference leaves voicing to RMVPE, which does so least.
 - **Speech.** PTDB-TUG is speech: it shows how the models handle a voice
   that glides and creaks, but the reference is judged first on singing.
 
@@ -186,7 +269,11 @@ A model or a tracker has no trusted mask and trusts every voiced frame.
   `PitchEstimate`, an entry in `registry.py`, a pin in the `pitch-research`
   group and a section in `thirdPartyNotices.md`. `align` must show every lag
   within 2.5 ms, or the lag is corrected in the module. Then run it on every
-  set and score it.
+  set, score it, and give it to `tune`.
+- **A change of the reference**: a new composition or new weights in
+  `pitch_audio/ensemble.py`, chosen with `tune`, then the old and the new
+  commit compared as above on every set and on the corpus of #969. The move
+  of the bench is recorded in #969 with the start re-measured.
 - **A data set**: an open license without NonCommercial or NoDerivatives
   terms, an f0 that no model under test produced, a `fetch_*` function in
   `truth.py`, and a `lag` check against the aligned models.
