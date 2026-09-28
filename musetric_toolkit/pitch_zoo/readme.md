@@ -114,7 +114,9 @@ audio and put on the same grid:
    0.6 of the voicing weights, RMVPE 3 and the others 1 each, so RMVPE and at
    least one more model must voice it. On the choir voices of Dagstuhl
    ChoirSet CREPE, SwiftF0 and FCPE voice the neighbouring singers and RMVPE
-   does so least.
+   does so least. RMVPE drops frames more than 18 dB below the tenth
+   percentile of its confident frames, the floor held between -55 and
+   -48 dB, which keeps the quiet ends of sung notes.
 2. **Pitch**: within each voiced run, every voiced model adds a Gaussian of
    30 cents around its pitch on a 10 cent grid, scaled by its pitch weight,
    RMVPE and FCPE 2, CREPE and SwiftF0 1; a Viterbi over that salience picks
@@ -125,10 +127,10 @@ audio and put on the same grid:
    path.
 3. **Trust**: a voiced frame is trusted when at least three models agree on
    it within 50 cents, or when RMVPE and CREPE agree and every other voiced
-   model is an octave below. On sung glides and high notes SwiftF0 and FCPE
-   fall an octave; on the singing of vocadito and Dagstuhl ChoirSet the upper
-   pair is right in those frames, on the speech of PTDB-TUG mostly the lower
-   one. The other voiced frames stay in the output, and the bench leaves them
+   model sits at a half, a third or a quarter of their pitch. On sung glides
+   and high notes SwiftF0 and FCPE fall to such a subharmonic; on the singing
+   of vocadito and Dagstuhl ChoirSet the upper pair is right in those frames,
+   on the speech of PTDB-TUG mostly the lower one. The other voiced frames stay in the output, and the bench leaves them
    out; `disputes` lists them with the pitch of every model.
 
 The weights and parameters live in `pitch_audio/ensemble.py` and were chosen
@@ -191,13 +193,13 @@ To change the reference, `tune` scores a grid of weights and parameters of
 the ensemble on the truth sets, next to every model alone, in four tables:
 the clean share, the trusted frames within 50 cents of the truth, the share
 of the voiced truth trusted and the false alarm. The grid is a JSON file;
-`octave_anchors` are indices into `--models`:
+`anchors` are indices into `--models`:
 
 ```json
 {
   "voicing_weights": [[3, 1, 1, 1], [1, 1, 1, 1]],
   "pitch_weights": [[2, 1, 1, 2], [1, 0, 0, 1]],
-  "octave_anchors": [[0, 1], []],
+  "anchors": [[0, 1], []],
   "params": {"voicing_share": [0.5, 0.6], "jump_penalty": [4, 8]}
 }
 ```

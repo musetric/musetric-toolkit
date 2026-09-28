@@ -8,6 +8,7 @@ from musetric_toolkit.pitch_zoo.pitch_csv import PitchTrack
 
 BIN_CENTS = 10.0
 OCTAVE_CENTS = 1200.0
+SUBHARMONICS = (2.0, 3.0, 4.0)
 FLOOR = 1e-6
 TIE_WEIGHT = 1e-3
 
@@ -27,14 +28,14 @@ class EnsembleParams:
 class ModelWeights:
     voicing: np.ndarray
     pitch: np.ndarray
-    octave_anchors: tuple[int, ...] = ()
+    anchors: tuple[int, ...] = ()
 
 
 REFERENCE_MODELS = ("rmvpe", "crepe", "swiftf0", "fcpe")
 REFERENCE_WEIGHTS = ModelWeights(
     voicing=np.array([3.0, 1.0, 1.0, 1.0]),
     pitch=np.array([2.0, 1.0, 1.0, 2.0]),
-    octave_anchors=(0, 1),
+    anchors=(0, 1),
 )
 
 
@@ -77,10 +78,10 @@ class RunDecode:
     cents: np.ndarray
     agree_weight: np.ndarray
     agree_count: np.ndarray
-    octave_trusted: np.ndarray
+    anchored: np.ndarray
 
 
-def _octave_trusted(
+def _anchored(
     agree: np.ndarray, below: np.ndarray, voiced: np.ndarray, anchors: tuple
 ) -> np.ndarray:
     if not anchors:
@@ -110,9 +111,10 @@ def decode_run(
     reach = max(1, round(params.step_cents / BIN_CENTS))
     path = centers[_viterbi(emission, reach, params.step_penalty, params.jump_penalty)]
     agree = voiced & (np.abs(cents - path[None, :]) <= params.agree_cents)
-    below = voiced & (
-        np.abs(cents - path[None, :] + OCTAVE_CENTS) <= params.agree_cents
-    )
+    below = np.zeros_like(voiced)
+    for ratio in SUBHARMONICS:
+        sub = path[None, :] - OCTAVE_CENTS * np.log2(ratio)
+        below |= voiced & (np.abs(cents - sub) <= params.agree_cents)
     agree_weight = (agree * weights[:, None]).sum(axis=0)
     agree_count = agree.sum(axis=0)
     agreeing = np.where(agree, cents, 0.0)
@@ -126,7 +128,7 @@ def decode_run(
         ),
         agree_weight=agree_weight,
         agree_count=agree_count,
-        octave_trusted=_octave_trusted(agree, below, voiced, model.octave_anchors),
+        anchored=_anchored(agree, below, voiced, model.anchors),
     )
 
 
@@ -139,7 +141,7 @@ def combine(
     ensemble_f0 = np.zeros(frames)
     agreement = np.zeros(frames)
     agree_count = np.zeros(frames, dtype=np.int64)
-    octave_trusted = np.zeros(frames, dtype=bool)
+    anchored = np.zeros(frames, dtype=bool)
     cents = _cents(f0_hz)
     edges = np.diff(
         np.concatenate(([0], (votes >= params.voicing_share), [0])).astype(np.int8)
@@ -151,11 +153,10 @@ def combine(
         ensemble_f0[start:end] = FMIN_HZ * np.power(2.0, run.cents / OCTAVE_CENTS)
         agreement[start:end] = run.agree_weight / weights.pitch.sum()
         agree_count[start:end] = run.agree_count
-        octave_trusted[start:end] = run.octave_trusted
+        anchored[start:end] = run.anchored
     return PitchTrack(
         times=np.zeros(frames),
         f0_hz=ensemble_f0,
         confidence=agreement,
-        trusted=(ensemble_f0 > 0.0)
-        & ((agree_count >= params.trust_count) | octave_trusted),
+        trusted=(ensemble_f0 > 0.0) & ((agree_count >= params.trust_count) | anchored),
     )

@@ -46,18 +46,18 @@ def build_candidates(grid: dict, models: list[str]) -> list[Candidate]:
     for voicing, pitch, anchors, values in itertools.product(
         grid.get("voicing_weights", [ones]),
         grid.get("pitch_weights", [ones]),
-        grid.get("octave_anchors", [[]]),
+        grid.get("anchors", [[]]),
         itertools.product(*(overrides[key] for key in keys)),
     ):
         changed = dict(zip(keys, values, strict=True))
         label = f"voicing {_weights_label(voicing)}, pitch {_weights_label(pitch)}"
         if anchors:
-            label += f", octave anchors {_weights_label(anchors)}"
+            label += f", anchors {_weights_label(anchors)}"
         label += "".join(f", {key} {value:g}" for key, value in changed.items())
         weights = ModelWeights(
             voicing=np.array(voicing, dtype=np.float64),
             pitch=np.array(pitch, dtype=np.float64),
-            octave_anchors=tuple(anchors),
+            anchors=tuple(anchors),
         )
         candidates.append(
             Candidate(label, weights, replace(EnsembleParams(), **changed))
