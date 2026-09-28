@@ -126,12 +126,15 @@ audio and put on the same grid:
    pitch is the weighted mean, in cents, of the models within 50 cents of the
    path.
 3. **Trust**: a voiced frame is trusted when at least three models agree on
-   it within 50 cents, or when RMVPE and CREPE agree and every other voiced
-   model sits at a half, a third or a quarter of their pitch. On sung glides
-   and high notes SwiftF0 and FCPE fall to such a subharmonic; on the singing
-   of vocadito and Dagstuhl ChoirSet the upper pair is right in those frames,
-   on the speech of PTDB-TUG mostly the lower one. The other voiced frames stay in the output, and the bench leaves them
-   out; `disputes` lists them with the pitch of every model.
+   it within 50 cents plus the change of the pitch over one frame, so that
+   models a few milliseconds apart on a fast glide still agree, or when RMVPE
+   and CREPE agree and every other voiced model is at least 1000 cents below
+   them. On sung glides and high notes SwiftF0 and FCPE fall to a
+   subharmonic, often lagging on it; on the singing of vocadito and Dagstuhl
+   ChoirSet the upper pair is right in those frames, on the speech of
+   PTDB-TUG mostly the lower one. The other voiced frames stay in the output,
+   and the bench leaves them out; `disputes` lists them with the pitch of
+   every model.
 
 The weights and parameters live in `pitch_audio/ensemble.py` and were chosen
 with `tune` on the truth sets. `confidence` in the output is the share of the

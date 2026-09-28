@@ -8,7 +8,6 @@ from musetric_toolkit.pitch_zoo.pitch_csv import PitchTrack
 
 BIN_CENTS = 10.0
 OCTAVE_CENTS = 1200.0
-SUBHARMONICS = (2.0, 3.0, 4.0)
 FLOOR = 1e-6
 TIE_WEIGHT = 1e-3
 
@@ -21,7 +20,9 @@ class EnsembleParams:
     step_penalty: float = 0.5
     jump_penalty: float = 8.0
     agree_cents: float = 50.0
+    slope_factor: float = 1.0
     trust_count: int = 3
+    below_cents: float = 1000.0
 
 
 @dataclass(frozen=True)
@@ -77,19 +78,19 @@ def _viterbi(
 class RunDecode:
     cents: np.ndarray
     agree_weight: np.ndarray
-    agree_count: np.ndarray
+    support_count: np.ndarray
     anchored: np.ndarray
 
 
 def _anchored(
-    agree: np.ndarray, below: np.ndarray, voiced: np.ndarray, anchors: tuple
+    support: np.ndarray, below: np.ndarray, voiced: np.ndarray, anchors: tuple
 ) -> np.ndarray:
     if not anchors:
-        return np.zeros(agree.shape[1], dtype=bool)
-    rest = np.ones(agree.shape[0], dtype=bool)
+        return np.zeros(support.shape[1], dtype=bool)
+    rest = np.ones(support.shape[0], dtype=bool)
     rest[list(anchors)] = False
     return (
-        agree[list(anchors)].all(axis=0)
+        support[list(anchors)].all(axis=0)
         & below[rest].any(axis=0)
         & (below[rest] | ~voiced[rest]).all(axis=0)
     )
@@ -111,10 +112,6 @@ def decode_run(
     reach = max(1, round(params.step_cents / BIN_CENTS))
     path = centers[_viterbi(emission, reach, params.step_penalty, params.jump_penalty)]
     agree = voiced & (np.abs(cents - path[None, :]) <= params.agree_cents)
-    below = np.zeros_like(voiced)
-    for ratio in SUBHARMONICS:
-        sub = path[None, :] - OCTAVE_CENTS * np.log2(ratio)
-        below |= voiced & (np.abs(cents - sub) <= params.agree_cents)
     agree_weight = (agree * weights[:, None]).sum(axis=0)
     agree_count = agree.sum(axis=0)
     agreeing = np.where(agree, cents, 0.0)
@@ -122,13 +119,20 @@ def decode_run(
         agree_weight, FLOOR
     )
     plain = agreeing.sum(axis=0) / np.maximum(agree_count, 1)
+    pitch = np.where(
+        agree_weight > 0.0, weighted, np.where(agree_count > 0, plain, path)
+    )
+    slope = np.abs(np.gradient(pitch)) if pitch.shape[0] > 1 else np.zeros(1)
+    offset = cents - pitch[None, :]
+    support = voiced & (
+        np.abs(offset) <= params.agree_cents + params.slope_factor * slope
+    )
+    below = voiced & (offset <= -params.below_cents)
     return RunDecode(
-        cents=np.where(
-            agree_weight > 0.0, weighted, np.where(agree_count > 0, plain, path)
-        ),
+        cents=pitch,
         agree_weight=agree_weight,
-        agree_count=agree_count,
-        anchored=_anchored(agree, below, voiced, model.anchors),
+        support_count=support.sum(axis=0),
+        anchored=_anchored(support, below, voiced, model.anchors),
     )
 
 
@@ -140,7 +144,7 @@ def combine(
     frames = f0_hz.shape[1]
     ensemble_f0 = np.zeros(frames)
     agreement = np.zeros(frames)
-    agree_count = np.zeros(frames, dtype=np.int64)
+    support_count = np.zeros(frames, dtype=np.int64)
     anchored = np.zeros(frames, dtype=bool)
     cents = _cents(f0_hz)
     edges = np.diff(
@@ -152,11 +156,12 @@ def combine(
         run = decode_run(cents[:, start:end], voiced[:, start:end], weights, params)
         ensemble_f0[start:end] = FMIN_HZ * np.power(2.0, run.cents / OCTAVE_CENTS)
         agreement[start:end] = run.agree_weight / weights.pitch.sum()
-        agree_count[start:end] = run.agree_count
+        support_count[start:end] = run.support_count
         anchored[start:end] = run.anchored
     return PitchTrack(
         times=np.zeros(frames),
         f0_hz=ensemble_f0,
         confidence=agreement,
-        trusted=(ensemble_f0 > 0.0) & ((agree_count >= params.trust_count) | anchored),
+        trusted=(ensemble_f0 > 0.0)
+        & ((support_count >= params.trust_count) | anchored),
     )
