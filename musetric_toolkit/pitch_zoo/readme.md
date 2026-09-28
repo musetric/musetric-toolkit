@@ -117,13 +117,19 @@ audio and put on the same grid:
    does so least.
 2. **Pitch**: within each voiced run, every voiced model adds a Gaussian of
    30 cents around its pitch on a 10 cent grid, scaled by its pitch weight,
-   RMVPE and FCPE 2, CREPE and SwiftF0 1; a Viterbi over that salience, moving
-   at most 100 cents per frame, picks the path, and the pitch is the weighted
-   mean, in cents, of the models within 50 cents of it.
+   RMVPE and FCPE 2, CREPE and SwiftF0 1; a Viterbi over that salience picks
+   the path, moving at most 100 cents per frame or jumping to the best bin of
+   the previous frame at a fixed cost, so that the path follows the majority
+   when a second source, such as a held backing note, sits in the stem. The
+   pitch is the weighted mean, in cents, of the models within 50 cents of the
+   path.
 3. **Trust**: a voiced frame is trusted when at least three models agree on
-   it within 50 cents. The other voiced frames stay in the output, and the
-   bench leaves them out; `disputes` lists them with the pitch of every
-   model.
+   it within 50 cents, or when RMVPE and CREPE agree and every other voiced
+   model is an octave below. On sung glides and high notes SwiftF0 and FCPE
+   fall an octave; on the singing of vocadito and Dagstuhl ChoirSet the upper
+   pair is right in those frames, on the speech of PTDB-TUG mostly the lower
+   one. The other voiced frames stay in the output, and the bench leaves them
+   out; `disputes` lists them with the pitch of every model.
 
 The weights and parameters live in `pitch_audio/ensemble.py` and were chosen
 with `tune` on the truth sets. `confidence` in the output is the share of the
@@ -184,13 +190,15 @@ by `--compare` are more than 50 cents from `--reference`;
 To change the reference, `tune` scores a grid of weights and parameters of
 the ensemble on the truth sets, next to every model alone, in four tables:
 the clean share, the trusted frames within 50 cents of the truth, the share
-of the voiced truth trusted and the false alarm. The grid is a JSON file:
+of the voiced truth trusted and the false alarm. The grid is a JSON file;
+`octave_anchors` are indices into `--models`:
 
 ```json
 {
   "voicing_weights": [[3, 1, 1, 1], [1, 1, 1, 1]],
   "pitch_weights": [[2, 1, 1, 2], [1, 0, 0, 1]],
-  "params": {"voicing_share": [0.5, 0.6], "trust_count": [2, 3]}
+  "octave_anchors": [[0, 1], []],
+  "params": {"voicing_share": [0.5, 0.6], "jump_penalty": [4, 8]}
 }
 ```
 

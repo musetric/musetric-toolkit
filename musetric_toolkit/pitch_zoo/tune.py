@@ -43,17 +43,21 @@ def build_candidates(grid: dict, models: list[str]) -> list[Candidate]:
     overrides = grid.get("params", {})
     keys = sorted(overrides)
     candidates = [Candidate(model, None, None, model) for model in models]
-    for voicing, pitch, values in itertools.product(
+    for voicing, pitch, anchors, values in itertools.product(
         grid.get("voicing_weights", [ones]),
         grid.get("pitch_weights", [ones]),
+        grid.get("octave_anchors", [[]]),
         itertools.product(*(overrides[key] for key in keys)),
     ):
         changed = dict(zip(keys, values, strict=True))
         label = f"voicing {_weights_label(voicing)}, pitch {_weights_label(pitch)}"
+        if anchors:
+            label += f", octave anchors {_weights_label(anchors)}"
         label += "".join(f", {key} {value:g}" for key, value in changed.items())
         weights = ModelWeights(
             voicing=np.array(voicing, dtype=np.float64),
             pitch=np.array(pitch, dtype=np.float64),
+            octave_anchors=tuple(anchors),
         )
         candidates.append(
             Candidate(label, weights, replace(EnsembleParams(), **changed))
