@@ -16,6 +16,8 @@
 - `musetric_toolkit/rhythm_audio`: tempo, beat, and rhythm analysis.
 - `musetric_toolkit/key_audio`: musical key detection.
 - `musetric_toolkit/chords_audio`: chord detection and recognition.
+- `musetric_toolkit/pitch_audio`: the reference pitch track the Musetric pitch bench scores against (RMVPE).
+- `musetric_toolkit/pitch_zoo`: pitch models, ground truth and the metrics of the bench that check that reference (`musetric-pitch-zoo`).
 - `musetric_toolkit/common`: shared utilities (logging, paths, env, model files).
 - `scripts/`: dev tooling (lint checks, ONNX export helpers).
 

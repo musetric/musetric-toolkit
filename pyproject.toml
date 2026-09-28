@@ -30,6 +30,7 @@ musetric-rhythm = "musetric_toolkit.rhythm_audio.main_cli:main_cli"
 musetric-key = "musetric_toolkit.key_audio.main_cli:main_cli"
 musetric-chords = "musetric_toolkit.chords_audio.main_cli:main_cli"
 musetric-pitch = "musetric_toolkit.pitch_audio.main_cli:main_cli"
+musetric-pitch-zoo = "musetric_toolkit.pitch_zoo.main_cli:main_cli"
 musetric-parity = "musetric_toolkit.parity_audio.main_cli:main_cli"
 
 [tool.uv]
@@ -66,6 +67,15 @@ export = [
     "onnx==1.22.0",
     "onnxconverter-common==1.16.0",
     "onnxscript==0.7.1",
+]
+pitch-research = [
+    "matplotlib==3.10.8",
+    "penn==1.0.0",
+    "pesto-pitch==2.0.1",
+    "pyworld-prebuilt==0.3.6.post1",
+    "swift-f0==0.3.0",
+    "torchcrepe==0.0.24",
+    "torchfcpe==0.0.4",
 ]
 
 [build-system]
