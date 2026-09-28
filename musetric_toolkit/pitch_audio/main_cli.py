@@ -30,24 +30,30 @@ def parse_arguments():
     parser.add_argument(
         "--audio-path",
         required=True,
-        help="Path to audio file",
+        help="Path to audio file, or to a directory of them with --out-dir",
     )
-    parser.add_argument(
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument(
         "--result-path",
-        required=True,
         help="Path to write the CSV (time_s,f0_hz,confidence,trusted)",
+    )
+    target.add_argument(
+        "--out-dir",
+        help="Directory for <stem>/reference.csv of every file in --audio-path",
     )
     parser.add_argument(
         "--from-seconds",
         type=float,
         default=None,
-        help="Start of the analysed range in seconds (default: track start)",
+        help="Start of the analysed range in seconds (default: track start); "
+        "with --result-path only",
     )
     parser.add_argument(
         "--to-seconds",
         type=float,
         default=None,
-        help="End of the analysed range in seconds (default: track end)",
+        help="End of the analysed range in seconds (default: track end); "
+        "with --result-path only",
     )
     parser.add_argument(
         "--hop-ms",

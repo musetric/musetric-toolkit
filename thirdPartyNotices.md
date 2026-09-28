@@ -368,3 +368,163 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## CREPE (torchcrepe)
+
+- Source: https://github.com/maxrmorrison/torchcrepe, a PyTorch port of https://github.com/marl/crepe.
+- Usage: a model of `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app. The `full` weights ship inside the `torchcrepe` package; its salience is decoded with the global Viterbi of `musetric_toolkit/pitch_audio/tracker.py`, because the package's own decoders add random dither of up to one bin (20 cents) and decode each batch apart.
+- Local files: `musetric_toolkit/pitch_zoo/crepe_model.py`.
+- License: MIT.
+- License source: installed package license file.
+
+MIT License
+
+Copyright (c) 2020 Max Morrison
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## SwiftF0
+
+- Source: https://github.com/lars76/swift-f0
+- Usage: a model of `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app. The ONNX model ships inside the `swift-f0` package.
+- Local files: `musetric_toolkit/pitch_zoo/swiftf0_model.py`.
+- License: MIT.
+- License source: installed package license file.
+
+MIT License
+
+Copyright (c) 2025-2026 Lars Nieradzik
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## FCPE (torchfcpe)
+
+- Source: https://github.com/CNChTu/FCPE
+- Usage: a model of `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app. The weights (`fcpe_c_v001.pt`) ship inside the `torchfcpe` package.
+- Local files: `musetric_toolkit/pitch_zoo/fcpe_model.py`.
+- License: MIT.
+- License source: installed package license file.
+
+MIT License
+
+Copyright (c) 2023 CN_ChiTu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## PENN (FCNF0++)
+
+- Source: https://github.com/interactiveaudiolab/penn; checkpoint https://huggingface.co/maxrmorrison/fcnf0-plus-plus, revision `74911e26f43ad38790a42592e77f9d8be0a5dd1c`.
+- Usage: a model of `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app. The checkpoint `fcnf0++.pt` is downloaded at runtime.
+- Local files: `musetric_toolkit/pitch_zoo/penn_model.py`.
+- License: MIT.
+- License source: installed package license file and the Hugging Face model card metadata.
+
+MIT License
+
+Copyright (c) 2022 Interactive Audio Lab
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## PESTO
+
+- Source: https://github.com/SonyCSLParis/pesto
+- Usage: a model of `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app. The `mir-1k_g7` checkpoint ships inside the `pesto-pitch` package, which is used unmodified as a library.
+- Local files: `musetric_toolkit/pitch_zoo/pesto_model.py`.
+- License: LGPL-3.0.
+- License source: installed package license file (`LICENSE.md`).
+
+## WORLD (pyworld)
+
+- Source: https://github.com/mmorise/World (the vocoder), https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder (the `pyworld` wrapper), built for current Python by https://github.com/tsukumijima/pyworld-prebuilt.
+- Usage: `musetric-pitch-zoo resynth` resynthesizes vocals along a known f0 curve (CheapTrick, D4C and the WORLD synthesizer) to make a ground-truth set, used by `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app.
+- Local files: `musetric_toolkit/pitch_zoo/resynth.py`.
+- License: modified BSD (WORLD, Copyright (c) 2010 M. Morise); MIT (pyworld, Copyright 2016 pyworld contributors).
+- License source: upstream `LICENSE.txt` of WORLD and the installed package license file.
+
+## vocadito
+
+- Source: https://zenodo.org/records/5578807 (R. Bittner, K. Pasalo, J. J. Bosch, G. Meseguer Brocal, D. Rubinstein: vocadito: A dataset of solo vocals with f0, note, and lyric annotations, 2021).
+- Usage: 40 solo singing excerpts and their f0 annotations, downloaded at runtime by `musetric-pitch-zoo truth` as ground truth for `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app.
+- Local files: `musetric_toolkit/pitch_zoo/truth.py`.
+- License: CC BY 4.0.
+- License source: Zenodo record metadata.
+
+## Dagstuhl ChoirSet
+
+- Source: https://zenodo.org/records/4618287, version 1.2.3 (S. Rosenzweig, H. Cuesta, C. Weiß, F. Scherbaum, E. Gómez, M. Müller: Dagstuhl ChoirSet: A Multitrack Dataset for MIR Research on Choral Singing, TISMIR 3(1), 2020).
+- Usage: the eight voices with manually annotated f0 and their dynamic-microphone recordings, read at runtime from the archive by `musetric-pitch-zoo truth` as ground truth for `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app.
+- Local files: `musetric_toolkit/pitch_zoo/truth.py`.
+- License: CC BY 4.0.
+- License source: Zenodo record metadata.
+
+## PTDB-TUG
+
+- Source: https://www.spsc.tugraz.at/databases-and-tools/ptdb-tug-pitch-tracking-database-from-graz-university-of-technology.html (G. Pirker, M. Wohlmayr, S. Petrik, F. Pernkopf: A Pitch Tracking Corpus with Evaluation on Multipitch Tracking Scenario, Interspeech 2011).
+- Usage: microphone recordings and laryngograph-based reference pitch of 100 utterances, downloaded at runtime by `musetric-pitch-zoo truth` as ground truth for `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app.
+- Local files: `musetric_toolkit/pitch_zoo/truth.py`.
+- License: Open Database License 1.0 for the database, Database Contents License 1.0 for its contents.
+- License source: the database page.

@@ -30,12 +30,47 @@ class TrackerResult:
 
 
 @dataclass(frozen=True)
+class SalienceDecoder:
+    transition: np.ndarray
+    cents_mapping: np.ndarray
+
+
+def create_salience_decoder() -> SalienceDecoder:
+    bins = np.arange(N_BINS)
+    transition = np.maximum(TRANSITION_WIDTH - np.abs(bins[:, None] - bins[None, :]), 0)
+    transition = transition.astype(np.float64)
+    transition /= transition.sum(axis=1, keepdims=True)
+    cents_mapping = np.pad(CENTS_STEP * bins + CENTS_OFFSET, (LOCAL_BINS, LOCAL_BINS))
+    return SalienceDecoder(transition=transition, cents_mapping=cents_mapping)
+
+
+def decode_salience(decoder: SalienceDecoder, salience: np.ndarray) -> TrackerResult:
+    probabilities = salience.astype(np.float64).T
+    probabilities /= probabilities.sum(axis=0, keepdims=True) + 1e-8
+    path = librosa.sequence.viterbi(probabilities, decoder.transition).astype(np.int64)
+
+    padded = np.pad(salience, ((0, 0), (LOCAL_BINS, LOCAL_BINS)))
+    local = np.arange(2 * LOCAL_BINS + 1)[None, :] + path[:, None]
+    rows = np.arange(padded.shape[0])[:, None]
+    local_salience = padded[rows, local]
+    local_cents = decoder.cents_mapping[local]
+    cents = (local_salience * local_cents).sum(axis=1)
+    cents /= local_salience.sum(axis=1) + 1e-12
+    confidence = padded.max(axis=1)
+    cents[confidence <= UNVOICED_SALIENCE] = 0.0
+    f0_hz = BASE_HZ * np.power(2.0, cents / 1200.0)
+    f0_hz[f0_hz == BASE_HZ] = 0.0
+    return TrackerResult(
+        f0_hz=f0_hz.astype(np.float64), confidence=confidence.astype(np.float64)
+    )
+
+
+@dataclass(frozen=True)
 class Tracker:
     model: E2E
     mel: MelSpectrogram
     device: torch.device
-    transition: np.ndarray
-    cents_mapping: np.ndarray
+    decoder: SalienceDecoder
 
 
 def load_tracker(checkpoint_path: Path, hop_samples: int) -> Tracker:
@@ -47,17 +82,11 @@ def load_tracker(checkpoint_path: Path, hop_samples: int) -> Tracker:
     mel = MelSpectrogram(
         N_MELS, SAMPLE_RATE, WINDOW, hop_samples, None, MEL_FMIN, MEL_FMAX
     )
-    bins = np.arange(N_BINS)
-    transition = np.maximum(TRANSITION_WIDTH - np.abs(bins[:, None] - bins[None, :]), 0)
-    transition = transition.astype(np.float64)
-    transition /= transition.sum(axis=1, keepdims=True)
-    cents_mapping = np.pad(CENTS_STEP * bins + CENTS_OFFSET, (LOCAL_BINS, LOCAL_BINS))
     return Tracker(
         model=model.to(device),
         mel=mel.to(device),
         device=device,
-        transition=transition,
-        cents_mapping=cents_mapping,
+        decoder=create_salience_decoder(),
     )
 
 
@@ -89,22 +118,4 @@ def _salience(tracker: Tracker, audio_16k: np.ndarray) -> np.ndarray:
 
 
 def track(tracker: Tracker, audio_16k: np.ndarray) -> TrackerResult:
-    salience = _salience(tracker, audio_16k)
-    probabilities = salience.astype(np.float64).T
-    probabilities /= probabilities.sum(axis=0, keepdims=True) + 1e-8
-    path = librosa.sequence.viterbi(probabilities, tracker.transition).astype(np.int64)
-
-    padded = np.pad(salience, ((0, 0), (LOCAL_BINS, LOCAL_BINS)))
-    local = np.arange(2 * LOCAL_BINS + 1)[None, :] + path[:, None]
-    rows = np.arange(padded.shape[0])[:, None]
-    local_salience = padded[rows, local]
-    local_cents = tracker.cents_mapping[local]
-    cents = (local_salience * local_cents).sum(axis=1)
-    cents /= local_salience.sum(axis=1) + 1e-12
-    confidence = padded.max(axis=1)
-    cents[confidence <= UNVOICED_SALIENCE] = 0.0
-    f0_hz = BASE_HZ * np.power(2.0, cents / 1200.0)
-    f0_hz[f0_hz == BASE_HZ] = 0.0
-    return TrackerResult(
-        f0_hz=f0_hz.astype(np.float64), confidence=confidence.astype(np.float64)
-    )
+    return decode_salience(tracker.decoder, _salience(tracker, audio_16k))
