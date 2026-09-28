@@ -21,6 +21,7 @@ COMMAND_MODULES = {
     "lag": "musetric_toolkit.pitch_zoo.lag",
     "score": "musetric_toolkit.pitch_zoo.score",
     "parity": "musetric_toolkit.pitch_zoo.parity",
+    "tune": "musetric_toolkit.pitch_zoo.tune",
     "disputes": "musetric_toolkit.pitch_zoo.disputes",
     "plot": "musetric_toolkit.pitch_zoo.plot",
 }
@@ -226,6 +227,42 @@ def _add_parity(commands, common: argparse.ArgumentParser) -> None:
     parity.add_argument("--tag", required=True, help="Tag of the scored CSVs")
 
 
+def _add_tune(commands, common: argparse.ArgumentParser) -> None:
+    tune = commands.add_parser(
+        "tune",
+        parents=[common],
+        help="score a grid of weights and parameters of the reference ensemble "
+        "on truth sets",
+    )
+    tune.add_argument(
+        "--tracks-dirs",
+        nargs="+",
+        required=True,
+        help="Track directories of the truth sets, such as <data>/dcs/tracks",
+    )
+    tune.add_argument(
+        "--models",
+        nargs="+",
+        required=True,
+        help="Names of the model CSVs to combine",
+    )
+    tune.add_argument(
+        "--grid",
+        required=True,
+        help="JSON with lists for voicing_weights, pitch_weights and params",
+    )
+    tune.add_argument(
+        "--truth",
+        default="truth",
+        help="Name of the truth CSV (default: truth)",
+    )
+    tune.add_argument(
+        "--out",
+        required=True,
+        help="Path prefix of the .md and .json report",
+    )
+
+
 def _add_disputes(commands, common: argparse.ArgumentParser) -> None:
     disputes = commands.add_parser(
         "disputes",
@@ -334,6 +371,7 @@ def parse_arguments():
         _add_lag,
         _add_score,
         _add_parity,
+        _add_tune,
         _add_disputes,
         _add_plot,
     ):

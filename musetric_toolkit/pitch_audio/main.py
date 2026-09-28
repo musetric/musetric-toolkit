@@ -2,23 +2,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import torch
 
-from musetric_toolkit.common import envs
 from musetric_toolkit.common.logger import send_message
-from musetric_toolkit.common.model_files import ensure_model_file
 from musetric_toolkit.common.paths import list_audio_files
-from musetric_toolkit.pitch_audio.tracker import (
-    SAMPLE_RATE,
-    Tracker,
-    load_tracker,
-    track,
+from musetric_toolkit.pitch_audio.ensemble import (
+    REFERENCE_MODELS,
+    REFERENCE_WEIGHTS,
+    EnsembleParams,
+    combine,
 )
-from musetric_toolkit.pitch_audio.trusted import energy_gate, trusted_mask
+from musetric_toolkit.pitch_zoo.estimate import SAMPLE_RATE, ModelContext, to_grid
+from musetric_toolkit.pitch_zoo.registry import ZOO_MODELS
 from musetric_toolkit.separate_audio.ffmpeg.read import read_audio_file
 from musetric_toolkit.separate_audio.system_info import ensure_ffmpeg
 
 CONTEXT_SECONDS = 1.0
-RESULT_NAME = "reference.csv"
 
 
 @dataclass(frozen=True)
@@ -40,35 +39,31 @@ def _write_csv(path: Path, reference: Reference) -> None:
             )
 
 
-def extract_reference(
-    tracker: Tracker, audio: np.ndarray, hop_samples: int, frames: tuple[int, int]
-) -> Reference:
-    first_frame, last_frame = frames
-    total_frames = audio.shape[0] // hop_samples
-    context_frames = int(np.ceil(CONTEXT_SECONDS * SAMPLE_RATE / hop_samples))
-    start_frame = max(0, first_frame - context_frames)
-    end_frame = min(total_frames, last_frame + context_frames)
-    segment = audio[start_frame * hop_samples : end_frame * hop_samples]
-    result = track(tracker, segment)
+class ReferenceBuilder:
+    def __init__(self, context: ModelContext) -> None:
+        self.models = [ZOO_MODELS[name].create(context) for name in REFERENCE_MODELS]
 
-    count = end_frame - start_frame
-    f0_hz = np.zeros(count)
-    confidence = np.zeros(count)
-    tracked = min(count, result.f0_hz.shape[0])
-    f0_hz[:tracked] = result.f0_hz[:tracked]
-    confidence[:tracked] = result.confidence[:tracked]
-    voiced = energy_gate(segment, SAMPLE_RATE, hop_samples, f0_hz, confidence)
-    f0_hz = np.where(voiced, f0_hz, 0.0)
-    confidence = np.clip(np.where(voiced, confidence, 0.0), 0.0, 1.0)
-    trusted = trusted_mask(f0_hz, confidence)
-
-    keep = slice(first_frame - start_frame, last_frame - start_frame)
-    return Reference(
-        time_s=np.arange(first_frame, last_frame) * (hop_samples / SAMPLE_RATE),
-        f0_hz=f0_hz[keep],
-        confidence=confidence[keep],
-        trusted=trusted[keep],
-    )
+    def build(
+        self, audio: np.ndarray, hop_samples: int, frames: tuple[int, int]
+    ) -> Reference:
+        first_frame, last_frame = frames
+        total_frames = audio.shape[0] // hop_samples
+        context_frames = int(np.ceil(CONTEXT_SECONDS * SAMPLE_RATE / hop_samples))
+        start_frame = max(0, first_frame - context_frames)
+        end_frame = min(total_frames, last_frame + context_frames)
+        segment = audio[start_frame * hop_samples : end_frame * hop_samples]
+        times = np.arange(end_frame - start_frame) * (hop_samples / SAMPLE_RATE)
+        f0_hz = np.stack(
+            [to_grid(model.estimate(segment), times).f0_hz for model in self.models]
+        )
+        combined = combine(f0_hz, REFERENCE_WEIGHTS, EnsembleParams())
+        keep = slice(first_frame - start_frame, last_frame - start_frame)
+        return Reference(
+            time_s=np.arange(first_frame, last_frame) * (hop_samples / SAMPLE_RATE),
+            f0_hz=combined.f0_hz[keep],
+            confidence=combined.confidence[keep],
+            trusted=combined.trusted[keep],
+        )
 
 
 def _frame_range(args, total_frames: int, hop_samples: int) -> tuple[int, int]:
@@ -90,19 +85,18 @@ def _frame_range(args, total_frames: int, hop_samples: int) -> tuple[int, int]:
 
 
 def main(args) -> None:
-    models_root = Path(args.models_path)
-    checkpoint_path = models_root / envs.rmvpe_checkpoint_rel_path
-    ensure_model_file(envs.rmvpe_checkpoint_url, checkpoint_path, "RMVPE checkpoint")
     ensure_ffmpeg()
     send_message({"type": "progress", "progress": 0.0})
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    builder = ReferenceBuilder(
+        ModelContext(models_path=Path(args.models_path), device=device)
+    )
     hop_samples = max(1, round(SAMPLE_RATE * args.hop_ms / 1000.0))
-    tracker = load_tracker(checkpoint_path, hop_samples)
     if args.result_path:
         audio = read_audio_file(args.audio_path, SAMPLE_RATE, 1)[0]
         frames = _frame_range(args, audio.shape[0] // hop_samples, hop_samples)
-        reference = extract_reference(tracker, audio, hop_samples, frames)
-        _write_csv(Path(args.result_path), reference)
+        _write_csv(Path(args.result_path), builder.build(audio, hop_samples, frames))
         send_message({"type": "progress", "progress": 1.0})
         return
 
@@ -110,6 +104,6 @@ def main(args) -> None:
     for index, audio_path in enumerate(audio_paths):
         audio = read_audio_file(str(audio_path), SAMPLE_RATE, 1)[0]
         frames = (0, audio.shape[0] // hop_samples)
-        reference = extract_reference(tracker, audio, hop_samples, frames)
-        _write_csv(Path(args.out_dir) / audio_path.stem / RESULT_NAME, reference)
+        reference = builder.build(audio, hop_samples, frames)
+        _write_csv(Path(args.out_dir) / audio_path.stem / f"{args.name}.csv", reference)
         send_message({"type": "progress", "progress": (index + 1) / len(audio_paths)})

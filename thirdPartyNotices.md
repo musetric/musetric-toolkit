@@ -372,8 +372,8 @@ SOFTWARE.
 ## CREPE (torchcrepe)
 
 - Source: https://github.com/maxrmorrison/torchcrepe, a PyTorch port of https://github.com/marl/crepe.
-- Usage: a model of `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app. The `full` weights ship inside the `torchcrepe` package; its salience is decoded with the global Viterbi of `musetric_toolkit/pitch_audio/tracker.py`, because the package's own decoders add random dither of up to one bin (20 cents) and decode each batch apart.
-- Local files: `musetric_toolkit/pitch_zoo/crepe_model.py`.
+- Usage: one of the four models that `musetric-pitch` combines into the reference of the Musetric pitch bench, and a model of `musetric-pitch-zoo`, which checks that reference; not part of any processing step of the app. The `full` weights ship inside the `torchcrepe` package; its salience is decoded with the global Viterbi of `musetric_toolkit/pitch_audio/tracker.py`, because the package's own decoders add random dither of up to one bin (20 cents) and decode each batch apart.
+- Local files: `musetric_toolkit/pitch_zoo/crepe_model.py`, `musetric_toolkit/pitch_audio/main.py`.
 - License: MIT.
 - License source: installed package license file.
 
@@ -402,8 +402,8 @@ SOFTWARE.
 ## SwiftF0
 
 - Source: https://github.com/lars76/swift-f0
-- Usage: a model of `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app. The ONNX model ships inside the `swift-f0` package.
-- Local files: `musetric_toolkit/pitch_zoo/swiftf0_model.py`.
+- Usage: one of the four models that `musetric-pitch` combines into the reference of the Musetric pitch bench, and a model of `musetric-pitch-zoo`, which checks that reference; not part of any processing step of the app. The ONNX model ships inside the `swift-f0` package.
+- Local files: `musetric_toolkit/pitch_zoo/swiftf0_model.py`, `musetric_toolkit/pitch_audio/main.py`.
 - License: MIT.
 - License source: installed package license file.
 
@@ -432,8 +432,8 @@ SOFTWARE.
 ## FCPE (torchfcpe)
 
 - Source: https://github.com/CNChTu/FCPE
-- Usage: a model of `musetric-pitch-zoo`, which checks the pitch reference of the Musetric pitch bench; not part of any processing step of the app. The weights (`fcpe_c_v001.pt`) ship inside the `torchfcpe` package.
-- Local files: `musetric_toolkit/pitch_zoo/fcpe_model.py`.
+- Usage: one of the four models that `musetric-pitch` combines into the reference of the Musetric pitch bench, and a model of `musetric-pitch-zoo`, which checks that reference; not part of any processing step of the app. The weights (`fcpe_c_v001.pt`) ship inside the `torchfcpe` package.
+- Local files: `musetric_toolkit/pitch_zoo/fcpe_model.py`, `musetric_toolkit/pitch_audio/main.py`.
 - License: MIT.
 - License source: installed package license file.
 

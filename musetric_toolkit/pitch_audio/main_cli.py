@@ -24,7 +24,8 @@ def apply_models_path(models_path: str) -> None:
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description=(
-            "Extract a reference pitch track with RMVPE and a global Viterbi decode"
+            "Extract the reference pitch track of the Musetric pitch bench: "
+            "RMVPE, CREPE, SwiftF0 and FCPE combined"
         ),
     )
     parser.add_argument(
@@ -39,7 +40,13 @@ def parse_arguments():
     )
     target.add_argument(
         "--out-dir",
-        help="Directory for <stem>/reference.csv of every file in --audio-path",
+        help="Directory for <stem>/<name>.csv of every file in --audio-path",
+    )
+    parser.add_argument(
+        "--name",
+        default="reference",
+        help="Name of the CSVs written with --out-dir (default: reference); "
+        "reference-<commit> keeps the output of several commits side by side",
     )
     parser.add_argument(
         "--from-seconds",
@@ -64,7 +71,7 @@ def parse_arguments():
     parser.add_argument(
         "--models-path",
         default=default_models_path(),
-        help="Directory for the downloaded checkpoint",
+        help="Directory for the downloaded checkpoints",
     )
     parser.add_argument(
         "--log-level",

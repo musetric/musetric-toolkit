@@ -1,8 +1,6 @@
 import numpy as np
 
 CONFIDENCE_CORE = 0.5
-CONFIDENCE_EXTEND = 0.1
-MAX_STEP_CENTS = 150.0
 ENERGY_WINDOW_SECONDS = 0.064
 ENERGY_CORE_PERCENTILE = 10.0
 ENERGY_RELATIVE_FLOOR_DB = 12.0
@@ -42,24 +40,3 @@ def energy_gate(
     )
     floor = float(np.clip(floor, ENERGY_ABSOLUTE_FLOOR_DB, ENERGY_MAX_FLOOR_DB))
     return voiced & (rms_db >= floor)
-
-
-def _joins(
-    f0_hz: np.ndarray, confidence: np.ndarray, index: int, neighbor: int
-) -> bool:
-    if f0_hz[index] <= 0.0 or confidence[index] < CONFIDENCE_EXTEND:
-        return False
-    step = abs(1200.0 * np.log2(f0_hz[index] / f0_hz[neighbor]))
-    return bool(step <= MAX_STEP_CENTS)
-
-
-def trusted_mask(f0_hz: np.ndarray, confidence: np.ndarray) -> np.ndarray:
-    trusted = (f0_hz > 0.0) & (confidence > CONFIDENCE_CORE)
-    count = trusted.shape[0]
-    for index in range(1, count):
-        if not trusted[index] and trusted[index - 1]:
-            trusted[index] = _joins(f0_hz, confidence, index, index - 1)
-    for index in range(count - 2, -1, -1):
-        if not trusted[index] and trusted[index + 1]:
-            trusted[index] = _joins(f0_hz, confidence, index, index + 1)
-    return trusted

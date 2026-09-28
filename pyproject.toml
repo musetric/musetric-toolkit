@@ -21,6 +21,9 @@ dependencies = [
     "nnAudio==0.3.4",
     "librosa==0.11.0",
     "onnxruntime-gpu==1.30.0",
+    "swift-f0==0.3.0",
+    "torchcrepe==0.0.24",
+    "torchfcpe==0.0.4",
 ]
 
 [project.scripts]
@@ -73,9 +76,6 @@ pitch-research = [
     "penn==1.0.0",
     "pesto-pitch==2.0.1",
     "pyworld-prebuilt==0.3.6.post1",
-    "swift-f0==0.3.0",
-    "torchcrepe==0.0.24",
-    "torchfcpe==0.0.4",
 ]
 
 [build-system]
