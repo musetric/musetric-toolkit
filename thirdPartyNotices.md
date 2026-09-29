@@ -243,8 +243,8 @@ specific language governing permissions and limitations under the License.
 ## Transformers.js
 
 - Source: https://github.com/huggingface/transformers.js
-- Usage: vendored ONNX conversion scripts (`scripts/convert.py`, `scripts/quantize.py`, `scripts/extra/whisper.py`) used to export Whisper to the transformers.js ONNX layout with cross-attention alignment heads. Only the whisper code path is exercised.
-- Local files: `scripts/onnx/whisper/convert.py`, `scripts/onnx/whisper/quantize.py`, `scripts/onnx/whisper/extra/whisper.py`.
+- Usage: vendored ONNX conversion scripts (`scripts/convert.py`, `scripts/quantize.py`, `scripts/extra/whisper.py`) used to export Whisper to the transformers.js ONNX layout with cross-attention alignment heads. Only the whisper code path is exercised. The transcription reference of `musetric-parity` ports the token timestamps of its Whisper pipeline (`medianFilter`, `dynamic_time_warping`, `_extract_token_timestamps`).
+- Local files: `scripts/onnx/whisper/convert.py`, `scripts/onnx/whisper/quantize.py`, `scripts/onnx/whisper/extra/whisper.py`, `musetric_toolkit/parity_audio/transcribe_chain.py`.
 - License: Apache-2.0.
 - License source: upstream `LICENSE`.
 
