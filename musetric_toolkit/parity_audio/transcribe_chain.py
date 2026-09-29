@@ -73,18 +73,13 @@ def generated_tokens(tokens: list[int], timestamp_begin: int) -> list[int]:
     return kept[:-1] if kept and kept[-1] == END_OF_TEXT else kept
 
 
-def timed_tokens(output, timestamp_begin: int) -> np.ndarray:
-    """[tokens, 2]: each generated token and its time, rounded as the product does."""
-    tokens = [int(token) for token in output["sequences"][0].tolist()]
-    times = [float(time) for time in output["token_timestamps"][0].tolist()]
-    start = next(
-        (index for index, token in enumerate(tokens) if token >= timestamp_begin),
-        len(tokens),
-    )
-    kept = generated_tokens(tokens, timestamp_begin)
+def text_rows(tokens: list[int], times: list[float]) -> np.ndarray:
+    """[tokens, 2]: each text token, the words the user sees, and its time
+    rounded as the product rounds it; special and timestamp tokens are left out."""
     rows = [
-        (token, js_round(times[start + index] * 100) / 100)
-        for index, token in enumerate(kept)
+        (token, js_round(time * 100) / 100)
+        for token, time in zip(tokens, times, strict=True)
+        if token < END_OF_TEXT
     ]
     return np.asarray(rows, dtype=np.float64).reshape(-1, 2)
 
@@ -286,13 +281,7 @@ def run(args, writer: CaseWriter) -> None:
     times = token_times(
         forward.cross_attentions, config.alignment_heads, positions, len(prompt)
     )
-    rows = [
-        (token, js_round(time * 100) / 100)
-        for token, time in zip(generated, times, strict=True)
-    ]
-    writer.tensor(
-        "result.tokens", "reference", np.asarray(rows, dtype=np.float64).reshape(-1, 2)
-    )
+    writer.tensor("result.tokens", "reference", text_rows(generated, times.tolist()))
     decoder = cpu_session(bundle / DECODER_FILE)
     writer.tensor(
         "decoder.logits",
@@ -308,4 +297,11 @@ def run(args, writer: CaseWriter) -> None:
         return_timestamps=True,
         return_token_timestamps=True,
     )
-    writer.tensor("result.tokens", "author", timed_tokens(author, timestamp_begin))
+    writer.tensor(
+        "result.tokens",
+        "author",
+        text_rows(
+            [int(token) for token in author["sequences"][0].tolist()],
+            [float(time) for time in author["token_timestamps"][0].tolist()],
+        ),
+    )
