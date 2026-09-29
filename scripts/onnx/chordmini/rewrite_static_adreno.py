@@ -12,7 +12,9 @@
 - A four-dimensional MatMul folds its two batch axes into one, and a MatMul
   whose constant weight has a width that is not a multiple of four is widened
   with zero columns and sliced back. Both shapes return wrong values on Adreno
-  750 while the shapes they become are exact there.
+  750 while the shapes they become are exact there. With --vec4-attention a
+  four-dimensional MatMul of more than eight rows is padded to the vec4 kernel
+  instead of folded.
 
 Tensor shapes come from `capture_shapes.py` because ONNX shape inference
 cannot resolve runtime-computed Reshape shapes.
@@ -58,6 +60,7 @@ CONV_BIAS_INPUT = 2
 RANK_2D = 2
 RANK_4D = 4
 MATMUL_WIDTH_MULTIPLE = 4
+VEC4_MIN_ROWS = 8
 
 
 @dataclass
@@ -73,6 +76,7 @@ class RewriteContext:
     replaced_convs: int = 0
     replaced_matmuls: int = 0
     padded_matmuls: int = 0
+    vec4_matmuls: int = 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,6 +92,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-transpose", action="store_true", help="keep Transpose nodes"
+    )
+    parser.add_argument(
+        "--vec4-attention",
+        action="store_true",
+        help="pad four-dimensional MatMuls of more than eight rows to the vec4 "
+        "kernel instead of folding them into three dimensions",
     )
     return parser.parse_args()
 
@@ -205,6 +215,99 @@ def rewrite_matmul(ctx: RewriteContext, node: onnx.NodeProto) -> bool:
                 [f"{node.name}/mm3d", f"{node.name}/oshape"],
                 [node.output[0]],
                 name=node.name + "_ro",
+            ),
+        ]
+    )
+    return True
+
+
+def pad_matmul_vec4(ctx: RewriteContext, node: onnx.NodeProto) -> bool:
+    """Pad a four-dimensional MatMul of two activations to the vec4 kernel.
+
+    onnxruntime's WebGPU MatMul takes its vec4 kernel when K and N are
+    multiples of four and a scalar one otherwise, and the Adreno 750 driver
+    miscompiles the scalar one for two- and four-dimensional products. Zero
+    rows and columns along K add nothing to the product, and the extra output
+    columns along N are sliced off, so every real value keeps its arithmetic.
+
+    Only products with more than eight rows: with fewer, onnxruntime runs the
+    vec4 kernel with one row per thread, which is wrong on Adreno 660 for most
+    N; those keep the fold into three dimensions.
+    """
+    left = ctx.shapes.get(node.input[0])
+    right = ctx.shapes.get(node.input[1])
+    if left is None or right is None:
+        return False
+    if len(left) != RANK_4D or len(right) != RANK_4D or left[:2] != right[:2]:
+        return False
+    rows, inner, width = left[2], left[3], right[3]
+    if rows <= VEC4_MIN_ROWS:
+        return False
+    padded_inner = -(-inner // MATMUL_WIDTH_MULTIPLE) * MATMUL_WIDTH_MULTIPLE
+    padded_width = -(-width // MATMUL_WIDTH_MULTIPLE) * MATMUL_WIDTH_MULTIPLE
+    if padded_inner == inner and padded_width == width:
+        return False
+    left_name, right_name = node.input[0], node.input[1]
+    zero = f"{node.name}/zero"
+    ctx.new_inits.append(helper.make_tensor(zero, TensorProto.FLOAT, [], [0.0]))
+    if padded_inner != inner:
+        pads = [0, 0, 0, 0, 0, 0, 0, padded_inner - inner]
+        ctx.new_inits.append(
+            helper.make_tensor(f"{node.name}/lpads", TensorProto.INT64, [8], pads)
+        )
+        left_name = f"{node.name}/left4"
+        ctx.new_nodes.append(
+            helper.make_node(
+                "Pad",
+                [node.input[0], f"{node.name}/lpads", zero],
+                [left_name],
+                name=node.name + "_pl",
+            )
+        )
+    pads = [0, 0, 0, 0, 0, 0, padded_inner - inner, padded_width - width]
+    ctx.new_inits.append(
+        helper.make_tensor(f"{node.name}/rpads", TensorProto.INT64, [8], pads)
+    )
+    right_name = f"{node.name}/right4"
+    ctx.new_nodes.append(
+        helper.make_node(
+            "Pad",
+            [node.input[1], f"{node.name}/rpads", zero],
+            [right_name],
+            name=node.name + "_pr",
+        )
+    )
+    if padded_width == width:
+        ctx.new_nodes.append(
+            helper.make_node(
+                "MatMul", [left_name, right_name], [node.output[0]], name=node.name
+            )
+        )
+        return True
+    for name, dims in (
+        (f"{node.name}/from", [0]),
+        (f"{node.name}/to", [width]),
+        (f"{node.name}/axis", [-1]),
+    ):
+        ctx.new_inits.append(helper.make_tensor(name, TensorProto.INT64, [1], dims))
+    ctx.new_nodes.extend(
+        [
+            helper.make_node(
+                "MatMul",
+                [left_name, right_name],
+                [f"{node.name}/wide"],
+                name=node.name + "_mm4",
+            ),
+            helper.make_node(
+                "Slice",
+                [
+                    f"{node.name}/wide",
+                    f"{node.name}/from",
+                    f"{node.name}/to",
+                    f"{node.name}/axis",
+                ],
+                [node.output[0]],
+                name=node.name + "_slice",
             ),
         ]
     )
@@ -419,6 +522,14 @@ def main() -> None:
         if (
             node.op_type == "MatMul"
             and not args.no_matmul
+            and args.vec4_attention
+            and pad_matmul_vec4(ctx, node)
+        ):
+            ctx.vec4_matmuls += 1
+            continue
+        if (
+            node.op_type == "MatMul"
+            and not args.no_matmul
             and rewrite_matmul(ctx, node)
         ):
             ctx.replaced_matmuls += 1
@@ -454,7 +565,7 @@ def main() -> None:
     print(
         f"saved {args.out}: transposes {ctx.replaced_transposes}, "
         f"convs {ctx.replaced_convs}, matmuls {ctx.replaced_matmuls}, "
-        f"padded {ctx.padded_matmuls}, "
+        f"padded {ctx.padded_matmuls}, vec4 {ctx.vec4_matmuls}, "
         f"{size_mb:.0f} MB, pinned {pinned}"
     )
 
