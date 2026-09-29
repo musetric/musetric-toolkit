@@ -221,11 +221,30 @@ This notice follows the source the weights are downloaded from, which declares
 MIT. The ONNX re-export used by the `musetric` web runtime is fetched from the
 `apache-2.0` model card instead and is documented as Apache-2.0 there.
 
+## OpenAI Whisper - openai/whisper-large-v3-turbo
+
+- Source: https://huggingface.co/openai/whisper-large-v3-turbo, revision `41f01f3fe87f28c78e2fbf8b568835947dd65ed9`.
+- Usage: the original weights in torch behind the transcription reference of `musetric-parity`, downloaded at runtime.
+- Local files: `musetric_toolkit/parity_audio/transcribe_chain.py`.
+- License: Apache-2.0.
+- License source: Hugging Face model card metadata.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+these files except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
 ## Transformers.js
 
 - Source: https://github.com/huggingface/transformers.js
-- Usage: vendored ONNX conversion scripts (`scripts/convert.py`, `scripts/quantize.py`, `scripts/extra/whisper.py`) used to export Whisper to the transformers.js ONNX layout with cross-attention alignment heads. Only the whisper code path is exercised.
-- Local files: `scripts/onnx/whisper/convert.py`, `scripts/onnx/whisper/quantize.py`, `scripts/onnx/whisper/extra/whisper.py`.
+- Usage: vendored ONNX conversion scripts (`scripts/convert.py`, `scripts/quantize.py`, `scripts/extra/whisper.py`) used to export Whisper to the transformers.js ONNX layout with cross-attention alignment heads. Only the whisper code path is exercised. The transcription reference of `musetric-parity` ports the token timestamps of its Whisper pipeline (`medianFilter`, `dynamic_time_warping`, `_extract_token_timestamps`).
+- Local files: `scripts/onnx/whisper/convert.py`, `scripts/onnx/whisper/quantize.py`, `scripts/onnx/whisper/extra/whisper.py`, `musetric_toolkit/parity_audio/transcribe_chain.py`.
 - License: Apache-2.0.
 - License source: upstream `LICENSE`.
 

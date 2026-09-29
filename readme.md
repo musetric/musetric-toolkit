@@ -91,11 +91,12 @@ the author's own inference. It is the reference side of the app's
 
 ```bash
 musetric-parity \
-  --step vocals \  # vocals|voices|rhythm|key|chords
+  --step vocals \  # vocals|voices|rhythm|key|chords|transcribe
   --audio-path /path/to/input.wav \  # input audio file
-  --onnx /path/to/model.onnx \  # the app's pinned ONNX model of the step
+  --onnx /path/to/model.onnx \  # the app's pinned ONNX model of the step; for transcribe its encoder, next to the rest of the bundle
   --case-path /path/to/case \  # output directory: raw tensors and manifest.json
   --models-path /path/to/models \  # base directory for downloaded models
+  --language en \  # transcribe only: the language of the case
   --log-level info  # debug|info|warn|error (default: info)
 ```
 

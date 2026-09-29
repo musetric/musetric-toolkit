@@ -7,7 +7,7 @@ import warnings
 from musetric_toolkit.common.logger import redirect_std_streams, setup_logging
 from musetric_toolkit.common.paths import default_models_path
 
-STEPS = ["vocals", "voices", "rhythm", "key", "chords"]
+STEPS = ["vocals", "voices", "rhythm", "key", "chords", "transcribe"]
 
 
 def configure_warning_filters(log_level: str) -> None:
@@ -56,6 +56,10 @@ def parse_arguments():
         "--models-path",
         default=default_models_path(),
         help="Directory for the downloaded original checkpoints",
+    )
+    parser.add_argument(
+        "--language",
+        help="Language code of the case, such as en; the transcribe step needs it",
     )
     parser.add_argument(
         "--log-level",

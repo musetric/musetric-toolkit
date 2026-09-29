@@ -1,0 +1,307 @@
+from pathlib import Path
+
+import numpy as np
+import onnxruntime as ort
+import torch
+
+from musetric_toolkit.common.logger import send_message
+from musetric_toolkit.parity_audio.case_writer import CaseWriter
+from musetric_toolkit.parity_audio.host_audio import POWER, read_mono
+
+# The transcription step at the level of one chunk: the host sends the lead stem
+# as the power downmix at 16 kHz, and the product decodes a chunk of up to 30 s
+# with the pinned ONNX pair through transformers.js
+# (packages/ai/src/runtime/whisper/whisperDecoder.ts): log-mel features padded
+# to 30 s, the q4 encoder, then greedy decoding with timestamps by the fp16
+# merged decoder and its cache, with a token budget, and a time for every token
+# from the alignment heads' cross-attention cropped to the chunk. The original
+# is openai/whisper-large-v3-turbo in torch, and the author runs its `generate`
+# with the model's own defaults. The decoder is compared under teacher forcing,
+# one token per step with the cache as the product runs it, so that a token
+# that differs on a device does not change what the later steps see. The token
+# times of the reference follow transformers.js (`_extract_token_timestamps`)
+# on the torch cross-attention: `generate` of transformers 4.51 puts every
+# token of a chunk at the end of the window, so its times are kept for the
+# author only.
+
+SAMPLE_RATE = 16000
+CHUNK_SAMPLES = 30 * SAMPLE_RATE
+ENCODER_POSITION_SAMPLES = 320
+ENCODER_POSITIONS = 1500
+MAX_DECODE_TOKENS = 400
+MIN_DECODE_TOKENS = 32
+TOKENS_PER_SECOND = 12
+END_OF_TEXT = 50257
+ORIGINAL_ID = "openai/whisper-large-v3-turbo"
+ORIGINAL_REVISION = "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
+DECODER_FILE = "decoder_model_merged_fp16.onnx"
+MEDIAN_FILTER_WIDTH = 7
+TIME_PRECISION = 0.02
+
+
+def js_round(value: float) -> int:
+    return int(np.floor(value + 0.5))
+
+
+def decode_budget(samples: int) -> tuple[int, int]:
+    """The product's encoder positions of the chunk and its token budget."""
+    positions = min(ENCODER_POSITIONS, js_round(samples / ENCODER_POSITION_SAMPLES))
+    seconds = samples / SAMPLE_RATE
+    budget = min(
+        MAX_DECODE_TOKENS,
+        max(
+            MIN_DECODE_TOKENS, js_round(seconds * TOKENS_PER_SECOND) + MIN_DECODE_TOKENS
+        ),
+    )
+    return positions, budget
+
+
+def cpu_session(path: Path) -> ort.InferenceSession:
+    options = ort.SessionOptions()
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    options.log_severity_level = 3
+    return ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
+
+
+def generated_tokens(tokens: list[int], timestamp_begin: int) -> list[int]:
+    """Tokens from the first timestamp on, without the closing end of text."""
+    start = next(
+        (index for index, token in enumerate(tokens) if token >= timestamp_begin),
+        len(tokens),
+    )
+    kept = tokens[start:]
+    return kept[:-1] if kept and kept[-1] == END_OF_TEXT else kept
+
+
+def text_rows(tokens: list[int], times: list[float]) -> np.ndarray:
+    """[tokens, 2]: each text token, the words the user sees, and its time
+    rounded as the product rounds it; special and timestamp tokens are left out."""
+    rows = [
+        (token, js_round(time * 100) / 100)
+        for token, time in zip(tokens, times, strict=True)
+        if token < END_OF_TEXT
+    ]
+    return np.asarray(rows, dtype=np.float64).reshape(-1, 2)
+
+
+def median_filter(row: np.ndarray, width: int) -> np.ndarray:
+    """transformers.js `medianFilter`: mirrored edges, the middle of each window."""
+    half = width // 2
+    length = row.shape[0]
+    index = np.abs(np.arange(length)[:, None] + np.arange(-half, half + 1)[None, :])
+    index = np.where(index >= length, 2 * (length - 1) - index, index)
+    return np.sort(row[index], axis=1)[:, half]
+
+
+def dynamic_time_warping(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """transformers.js `dynamic_time_warping`, ties resolved the same way."""
+    rows, columns = matrix.shape
+    cost = np.full((rows + 1, columns + 1), np.inf)
+    cost[0, 0] = 0
+    trace = np.full((rows + 1, columns + 1), -1)
+    for column in range(1, columns + 1):
+        for row in range(1, rows + 1):
+            moves = (
+                cost[row - 1, column - 1],
+                cost[row - 1, column],
+                cost[row, column - 1],
+            )
+            if moves[0] < moves[1] and moves[0] < moves[2]:
+                move = 0
+            elif moves[1] < moves[0] and moves[1] < moves[2]:
+                move = 1
+            else:
+                move = 2
+            cost[row, column] = matrix[row - 1, column - 1] + moves[move]
+            trace[row, column] = move
+    trace[0, :] = 2
+    trace[:, 0] = 1
+    text, time = [], []
+    row, column = rows, columns
+    while row > 0 or column > 0:
+        text.append(row - 1)
+        time.append(column - 1)
+        move = trace[row, column]
+        row -= 1 if move in (0, 1) else 0
+        column -= 1 if move in (0, 2) else 0
+    return np.asarray(text[::-1]), np.asarray(time[::-1])
+
+
+def token_times(
+    cross_attentions, heads: list[list[int]], positions: int, prompt_length: int
+) -> np.ndarray:
+    """The time of every generated token, as transformers.js computes it."""
+    weights = np.stack(
+        [
+            cross_attentions[layer][0, head, :, :positions].float().cpu().numpy()
+            for layer, head in heads
+        ]
+    )
+    mean = weights.mean(axis=1, keepdims=True)
+    std = weights.std(axis=1, keepdims=True)
+    weights = (weights - mean) / std
+    weights = np.stack(
+        [[median_filter(row, MEDIAN_FILTER_WIDTH) for row in head] for head in weights]
+    )
+    matrix = weights[:, prompt_length:].mean(axis=0)
+    text, time = dynamic_time_warping(-matrix.astype(np.float64))
+    jumps = np.concatenate([[True], np.diff(text) != 0])
+    return time[jumps] * TIME_PRECISION
+
+
+def teacher_forced_onnx(
+    session: ort.InferenceSession,
+    encoder_states: np.ndarray,
+    forced: list[int],
+    prompt_length: int,
+) -> np.ndarray:
+    """Logits of every position but the last: the prompt in one step without a
+    cache, then one token per step, as transformers.js runs the merged decoder."""
+    past = {}
+    for model_input in session.get_inputs():
+        if model_input.name.startswith("past_key_values."):
+            _, heads, _, width = model_input.shape
+            past[model_input.name] = np.zeros((1, heads, 0, width), dtype=np.float16)
+    names = [output.name for output in session.get_outputs()]
+    states = encoder_states.astype(np.float32)
+
+    def step(ids: list[int], use_cache: bool) -> dict[str, np.ndarray]:
+        values = session.run(
+            names,
+            {
+                **past,
+                "input_ids": np.asarray([ids], dtype=np.int64),
+                "encoder_hidden_states": states,
+                "use_cache_branch": np.asarray([use_cache]),
+            },
+        )
+        return dict(zip(names, values, strict=True))
+
+    outputs = step(forced[:prompt_length], use_cache=False)
+    logits = [outputs["logits"][0]]
+    for name in past:
+        past[name] = outputs[name.replace("past_key_values.", "present.")]
+    for position in range(prompt_length, len(forced) - 1):
+        outputs = step([forced[position]], use_cache=True)
+        logits.append(outputs["logits"][0])
+        for name in past:
+            if ".decoder." in name:
+                past[name] = outputs[name.replace("past_key_values.", "present.")]
+    return np.concatenate(logits).astype(np.float64)
+
+
+def load_original(device: torch.device):
+    from transformers import WhisperForConditionalGeneration  # noqa: PLC0415
+
+    model = WhisperForConditionalGeneration.from_pretrained(
+        ORIGINAL_ID,
+        revision=ORIGINAL_REVISION,
+        torch_dtype=torch.float32,
+        attn_implementation="eager",
+    )
+    return model.to(device).eval()
+
+
+def run(args, writer: CaseWriter) -> None:
+    from transformers import (  # noqa: PLC0415
+        GenerationConfig,
+        WhisperFeatureExtractor,
+    )
+
+    bundle = Path(args.onnx).parent
+    language = args.language
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+    audio = read_mono(args.audio_path, SAMPLE_RATE, POWER)[:CHUNK_SAMPLES]
+    samples = audio.shape[0]
+    positions, budget = decode_budget(samples)
+    extractor = WhisperFeatureExtractor.from_pretrained(bundle)
+    features = extractor(
+        audio.astype(np.float32), sampling_rate=SAMPLE_RATE, return_tensors="np"
+    ).input_features
+    config = GenerationConfig.from_pretrained(bundle)
+    timestamp_begin = config.no_timestamps_token_id + 1
+    prompt = [
+        config.decoder_start_token_id,
+        config.lang_to_id[f"<|{language}|>"],
+        config.task_to_id["transcribe"],
+    ]
+    writer.tensor("unit.input", "reference", audio)
+    writer.tensor("model.input", "reference", features)
+
+    send_message({"type": "progress", "progress": 0.1})
+    model = load_original(device)
+    features_t = torch.from_numpy(features).to(device)
+    with torch.inference_mode():
+        encoded = model.model.encoder(features_t).last_hidden_state
+    writer.tensor("encoder.output", "original", encoded.double().cpu().numpy())
+    encoder = cpu_session(Path(args.onnx))
+    (onnx_encoded,) = encoder.run(["last_hidden_state"], {"input_features": features})
+    writer.tensor("encoder.output", "onnx-cpu", onnx_encoded)
+
+    send_message({"type": "progress", "progress": 0.4})
+    reference = model.generate(
+        input_features=features_t,
+        generation_config=config,
+        language=language,
+        task="transcribe",
+        return_timestamps=True,
+        return_token_timestamps=True,
+        max_new_tokens=budget,
+        num_frames=2 * positions,
+    )
+    tokens = [int(token) for token in reference["sequences"][0].tolist()]
+    generated = generated_tokens(tokens, timestamp_begin)
+    forced = prompt + generated + [END_OF_TEXT]
+    writer.tensor("decoder.tokens", "reference", np.asarray(forced), "int32")
+    writer.meta.update(
+        {
+            "sampleRate": SAMPLE_RATE,
+            "samples": samples,
+            "language": language,
+            "positions": positions,
+            "maxNewTokens": budget,
+            "promptLength": len(prompt),
+            "timestampBegin": timestamp_begin,
+        }
+    )
+
+    send_message({"type": "progress", "progress": 0.6})
+    with torch.inference_mode():
+        forward = model(
+            input_features=features_t,
+            decoder_input_ids=torch.tensor([forced[:-1]], device=device),
+            output_attentions=True,
+        )
+    writer.tensor(
+        "decoder.logits", "original", forward.logits[0].double().cpu().numpy()
+    )
+    times = token_times(
+        forward.cross_attentions, config.alignment_heads, positions, len(prompt)
+    )
+    writer.tensor("result.tokens", "reference", text_rows(generated, times.tolist()))
+    decoder = cpu_session(bundle / DECODER_FILE)
+    writer.tensor(
+        "decoder.logits",
+        "onnx-cpu",
+        teacher_forced_onnx(decoder, onnx_encoded, forced, len(prompt)),
+    )
+
+    send_message({"type": "progress", "progress": 0.8})
+    author = model.generate(
+        input_features=features_t,
+        language=language,
+        task="transcribe",
+        return_timestamps=True,
+        return_token_timestamps=True,
+    )
+    writer.tensor(
+        "result.tokens",
+        "author",
+        text_rows(
+            [int(token) for token in author["sequences"][0].tolist()],
+            [float(time) for time in author["token_timestamps"][0].tolist()],
+        ),
+    )

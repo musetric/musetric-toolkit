@@ -5,6 +5,7 @@ from musetric_toolkit.parity_audio import (
     chords_chain,
     key_chain,
     rhythm_chain,
+    transcribe_chain,
     vocals_chain,
     voices_chain,
 )
@@ -17,6 +18,7 @@ CHAINS = {
     "rhythm": rhythm_chain.run,
     "key": key_chain.run,
     "chords": chords_chain.run,
+    "transcribe": transcribe_chain.run,
 }
 
 
