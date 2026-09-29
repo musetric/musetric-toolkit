@@ -98,11 +98,12 @@ exceeds `1e-4`.
 
 `chordnet.onnx` as exported routes 79 of its Transposes to onnxruntime's
 shared-tile WebGPU kernel, which computes wrong logits on Adreno 6xx, and its
-MatMul shapes hit two Adreno 750 defects of that provider. `capture_shapes.py`
-records the runtime shapes of the exported graph and `rewrite_static_adreno.py`
-replaces those Transposes with constant-index Gathers, folds the batch axes of
-every four-dimensional MatMul into one, and widens the classifier weight to a
-multiple of four columns. The published classifier is this rewrite:
+MatMul shapes hit the scalar MatMul kernel, which the Adreno 750 driver
+miscompiles. `capture_shapes.py` records the runtime shapes of the exported
+graph and `rewrite_static_adreno.py` replaces those Transposes with
+constant-index Gathers, keeps the MatMuls off that kernel, and widens the
+classifier weight to a multiple of four columns. The published classifier is
+this rewrite:
 
 ```sh
 uv run --group export python scripts/onnx/chordmini/capture_shapes.py \
@@ -112,7 +113,7 @@ uv run --group export python scripts/onnx/chordmini/capture_shapes.py \
 
 uv run --group export python scripts/onnx/chordmini/rewrite_static_adreno.py \
   --model <chordnet-export-dir>/chordnet.onnx --shapes <shapes.json> \
-  --out <rewrite-dir>/chordnet.onnx
+  --out <rewrite-dir>/chordnet.onnx --vec4-attention
 
 uv run --group export python scripts/onnx/roformer/dispatch_rows_audit.py \
   <rewrite-dir>/chordnet.onnx
@@ -124,21 +125,36 @@ earlier batch-1 graph node for node.
 
 ### What the MatMul rewrites are for
 
-On Adreno 750 the WebGPU MatMul kernel returns wrong values for two shapes this
-graph uses, deterministically and by units, while wasm on the same device is
-right:
+onnxruntime's WebGPU MatMul runs a vec4 kernel when K and N are multiples of
+four and a scalar one otherwise. The Adreno 750 driver miscompiles the scalar
+kernel that onnxruntime generates for two- and four-dimensional products, while
+the three-dimensional one comes out right (musetric/musetric#891). The exported
+graph uses it for the attention, `[16, 8, 108, 108] x [16, 8, 108, 18]` and
+`[W * 108, 8, 2, 2] x [W * 108, 8, 2, 9]`, and for the classifier
+`[16, 108, 144] x [144, 170]`, deterministically wrong by units there while
+wasm on the same device is right. The rewrite keeps them off it:
 
-- four dimensions with the extents of the chord attention, which the fold into
-  three dimensions avoids; the same product in three dimensions is exact;
-- an output width that is not a multiple of four, which the classifier
-  `[16, 108, 144] x [144, 170]` has; padding it to 172 columns and slicing the
-  result back is exact, and the same product at 168 or 172 columns matches wasm
-  to 1.9e-6 while 170 differs by 4.2.
+- every four-dimensional MatMul folds into three dimensions;
+- the classifier weight widens to 172 columns, which is the vec4 kernel, and
+  the result is sliced back.
 
 Together they are what makes the chord logits match wasm on that GPU: the
 published rewrite differs from wasm by 3.13 there, with 386 of 1728 frames
 choosing another chord, and this one by 5.7e-6 with no frame changed. On
 Adreno 660 and on desktop the rewrites change no result and cost no time.
+
+`--vec4-attention` takes the time attention, the MatMuls of more than eight
+rows, to the vec4 kernel instead: K and N are padded with zeros to multiples of
+four and the extra output columns are sliced off, so the scalar kernel is left
+only for the two-row frequency attention. That one keeps the fold, because
+onnxruntime runs a product of eight rows or fewer on the vec4 kernel with one
+row per thread, which is wrong on Adreno 660. On 16 windows of real CQT
+features against ORT CPU, both graphs differ by 4.8e-6 with no frame changed on
+the desktop, the Adreno 750 and the Adreno 660, and the vec4 attention takes
+20.7 / 97.8 / 283.4 ms per run against 24.0 / 101.2 / 286.5 ms for the fold;
+without the MatMul rewrites the Adreno 750 differs by 2.07 with 94 frames
+changed. The published revision `8ab85fc0` is built with the flag; without it
+the build reproduces the previous revision `08616241` byte for byte.
 
 The rewrite is exact against the exported graph (max |Δlogit| ~5e-6 on ORT
 CPU and on WebGPU) but static: every Gather index and Reshape target is baked
