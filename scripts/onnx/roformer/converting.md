@@ -34,7 +34,7 @@ at <https://huggingface.co/musetric/aname-mel-band-roformer-duality-onnx>:
 
 | File | SHA256 |
 |---|---|
-| `duality_core_t1100.onnx` | `2f420979a600426417b48264785364cbd62d2d81d70037f99c62baffb837d96b` |
+| `duality_core_t1100.onnx` | `87f97dddaf06cb02144529810c5cf42588e8af174700996ad181dbd9092355fb` |
 | `duality_core_t1100.onnx.data` | `ba2a1daacde1608a57564c7bb24a3efe2f50388b2168143044019a6cbe3f21c6` |
 
 Download both files into `tmp/models` (the `.data` file must sit next to its graph):
@@ -154,6 +154,39 @@ On the loudest 1100-frame window of every CC BY and CC BY-SA track of
 export of `Aname-Tommy/Mel-Band-Roformer_Duality` scores 40.4-53.1 dB against
 the torch model with the angles in fp16 and 63.7-71.0 dB with the tables
 folded. Cores exported before this change carry the angles in fp16.
+
+## Keep the Band Split in fp32
+
+`--all-fp16` applies this; there is no flag. The fp16 conversion casts
+`stft_repr` to fp16 before the band gather. Adreno GPUs read every fp16
+subnormal, below 6.1e-5, as zero, and round the cast from fp32 toward zero,
+while 12-18 % of the values of a music STFT lie in that range. Each band-split
+`RMSNormalization` then scales its band row to unit rms, so the zeroed bins of a
+quiet band become errors as large as its features: the masks of the Adreno 660
+and 750 stayed 20-25 dB from onnxruntime's CPU provider against 38-42 dB on the
+desktop, and further the quieter the input (musetric/musetric#971).
+`keep_band_split_fp32` removes that cast, so the band gather, its reshapes and
+the 60 band norms run in fp32, and casts each norm's unit-scale output to fp16
+for the band `Linear`.
+
+Those norms also take `RMSNORM_EPS` (1e-12) instead of the fp16 epsilon. At
+1e-9 a band row whose rms is below sqrt(1e-9) = 3.2e-5 is damped against the
+model's `F.normalize`, which alone kept the masks of the CPU provider 26-36 dB
+from torch; at 1e-12 they are 55-62 dB from it.
+
+Masks of four 1100-frame units of Rxbyn, "Bad Side"
+(<https://www.jamendo.com/track/1556580/bad-side>, CC BY 3.0, from
+JamendoLyrics): 60-80 s, the same at half level, 20-26 s, and the first unit of
+the whole track. WebGPU with the app's provider and session options, against
+the CPU provider of the same graph / against torch:
+
+| Core | Desktop NVIDIA | Adreno 750 and 660 |
+|---|---|---|
+| band split in fp16 | 37.6-41.6 dB / 25.7-33.5 dB | 20.0-25.5 dB / 19.8-26.3 dB |
+| band split in fp32 | 37.6-42.0 dB / 37.5-42.1 dB | 34.9-39.8 dB / 34.8-39.7 dB |
+
+The Adreno 750 and the Adreno 660 return the same bits, and the time per unit
+does not change.
 
 ## Shorten the Longest Dispatches
 
