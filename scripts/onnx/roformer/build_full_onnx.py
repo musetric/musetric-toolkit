@@ -612,7 +612,7 @@ class Core(nn.Module):
         return (summed / self.denom).float()
 
 
-def export(  # noqa: C901, PLR0913, PLR0915
+def export(  # noqa: C901, PLR0912, PLR0913, PLR0915
     full: nn.Module,
     output: Path,
     fp32: bool = False,
@@ -725,6 +725,9 @@ def export(  # noqa: C901, PLR0913, PLR0915
 
         if core_only:
             ensure_float32_outputs(model16)
+        if all_fp16:
+            moved = keep_band_split_fp32(model16, RMSNORM_EPS)
+            print(f"  kept the band gather and {moved} band norms in fp32")
         assert_fp16_epsilon_safe(model16)
         assert_dispatch_rows_safe(model16)
         save_fp16(model16, output)
@@ -1042,6 +1045,104 @@ def dispatch_rows(node, dims: list[int], constants: dict) -> int | None:
     if node.op_type in LEADING_AXES_OPS:
         return int(np.prod(dims[:axis]))
     return size // dims[axis]
+
+
+def keep_band_split_fp32(model, epsilon: float) -> int:
+    """Keep the band gather and the band-split RMSNorms in fp32.
+
+    The fp16 conversion casts the spectrum to fp16 before the band gather. Adreno
+    GPUs read every fp16 subnormal, below 6.1e-5, as zero, and 12-18 % of the
+    values of a music STFT lie there. Each band-split RMSNorm then scales its band
+    to unit rms, so the zeroed bins of a quiet band become errors as large as its
+    features, and the masks drift the further the quieter the input: 20-25 dB
+    against onnxruntime's CPU provider on the Adreno 660 and 750, 41 dB on the
+    desktop (musetric/musetric#971). Removing that Cast keeps the gather, its
+    reshapes and the norms in fp32, and each norm's unit-scale output is cast to
+    fp16 before the band Linear.
+
+    The norms also take the fp32 epsilon. At the fp16 one, a row whose rms is
+    below sqrt(1e-9) = 3.2e-5 is damped against the model's F.normalize, which
+    alone kept the masks 30.8 dB from torch on the CPU provider; at 1e-12 they are
+    59.6 dB from it.
+
+    Returns the number of norms moved to fp32.
+    """
+    import onnx  # noqa: PLC0415
+
+    graph = model.graph
+    producer, _ = _io_maps(graph)
+    inits = {i.name: i for i in graph.initializer}
+    norms = [
+        n
+        for n in graph.node
+        if n.op_type == "RMSNormalization" and "band_split" in n.input[1]
+    ]
+    front, cast = _band_split_front(producer, norms)
+    for node in graph.node:
+        if node.name in front:
+            node.input[:] = [
+                cast.input[0] if name == cast.output[0] else name for name in node.input
+            ]
+
+    fp16_gammas = {norm.input[1] for norm in norms}
+    replace_at = {
+        norm.name: _band_norm_to_fp32(norm, inits, graph, epsilon) for norm in norms
+    }
+    _rewrite_nodes(graph, {cast.name, *replace_at}, replace_at)
+    kept_inits = [i for i in graph.initializer if i.name not in fp16_gammas]
+    del graph.initializer[:]
+    graph.initializer.extend(kept_inits)
+
+    front_tensors = {o for n in graph.node if n.name in front for o in n.output}
+    for value in graph.value_info:
+        if value.name in front_tensors:
+            value.type.tensor_type.elem_type = onnx.TensorProto.FLOAT
+    return len(norms)
+
+
+def _band_split_front(producer: dict, norms: list) -> tuple[set, object]:
+    """The nodes between the input's fp16 Cast and the band norms, and the Cast."""
+    front, casts, stack = set(), {}, [n.input[0] for n in norms]
+    while stack:
+        node = producer[stack.pop()]
+        if node.op_type == "Cast":
+            casts[node.name] = node
+        elif node.op_type in ("GatherND", "Transpose", "Reshape", "Split"):
+            if node.name not in front:
+                front.add(node.name)
+                stack.append(node.input[0])
+        else:
+            raise RuntimeError(f"unexpected {node.op_type} before the band norms")
+    if len(casts) != 1:
+        raise RuntimeError(
+            f"expected one fp16 Cast before the band norms: {set(casts)}"
+        )
+    return front, next(iter(casts.values()))
+
+
+def _band_norm_to_fp32(norm, inits: dict, graph, epsilon: float) -> list:
+    """The norm on an fp32 gamma and epsilon, then a Cast of its output to fp16."""
+    import onnx  # noqa: PLC0415
+    from onnx import numpy_helper  # noqa: PLC0415
+
+    gamma = numpy_helper.to_array(inits[norm.input[1]]).astype(np.float32)
+    graph.initializer.append(numpy_helper.from_array(gamma, f"{norm.input[1]}_fp32"))
+    norm.input[1] = f"{norm.input[1]}_fp32"
+    for attribute in norm.attribute:
+        if attribute.name == "epsilon":
+            attribute.f = epsilon
+    fp16_output = norm.output[0]
+    norm.output[0] = f"{fp16_output}_fp32"
+    return [
+        norm,
+        onnx.helper.make_node(
+            "Cast",
+            [norm.output[0]],
+            [fp16_output],
+            name=f"{norm.name}_to_float16",
+            to=onnx.TensorProto.FLOAT16,
+        ),
+    ]
 
 
 def ensure_float32_outputs(model) -> int:
