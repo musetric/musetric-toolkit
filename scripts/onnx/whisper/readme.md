@@ -207,10 +207,44 @@ merged.
 uv run python scripts/onnx/whisper/flatten_decoder_step.py   --input  deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx   --step   deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx   --cross  deps/whisper-large-v3-turbo-onnx/cross_kv_fp16.onnx
 ```
 
+## Keep the step's small products out of the float16 subnormal range
+
+Adreno GPUs compute float16 without subnormals: a product below 2^-14 is zero
+even when both factors are normal numbers (2^-7 times 2^-8 is zero there), and
+a stored value below 2^-14 reads as zero. Three products of a step are sums of
+exactly such terms - the attention probabilities times the values, the
+attention output times `out_proj`, and the GELU tail times `fc2` - and on an
+Adreno 750 each loses a fifth to a half of its result while NVIDIA, which
+keeps subnormals, stays within 1-3 % of the CPU. That is musetric#881: logits
+up to 2.3 from the CPU at a scale of 23 against 0.35 on the desktop, and word
+times moving with them. The cross-attention softmax loses on top of it the
+probabilities below 2^-14, 1-3 % of a head's mass and up to a fifth of the
+layer 0 context.
+
+`scale_residual_stream.py` scales what those products read by 2^10, exactly,
+and folds the scale away where it would be seen: the residual stream carries
+2^10 x (positional table, one `Mul` after the token embedding, the `out_proj`
+and `fc2` biases and the `fc2` weights), the self-attention values carry 2^10 v
+(`v_proj`), each layer norm becomes one `LayerNormalization` with its epsilon
+times 2^20 (ONNX Runtime's pattern fusion reads a float16 epsilon back as
+1e-5 on the CPU provider, an explicit node keeps it), and the cross-attention
+softmax runs in float32, feeds `cross_attentions.*` as float32 and scales its
+probabilities by 2^10 before the float16 cast the value product reads. The
+final layer norm removes the scale, so the logits and `cross_kv_fp16.onnx`
+are untouched. On the recorded inputs of one step, an Adreno 750 goes from
+2.30 to 0.34 from the CPU in logits, the desktop's 0.36; on CPU the scaled
+step matches the unscaled one to 0.03 at a scale of 29 with the same argmax
+on every step of a 30 s window.
+
+```bash
+uv run python scripts/onnx/whisper/scale_residual_stream.py   --input  deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx   --output deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx
+```
+
 The published set is then the q4 encoder, the fp16 step decoder with
 `cross_kv_fp16.onnx`, the merged q4 decoder and the JSON; the passes run in
 this order: `mobile_decoder.py`, `trim_cross_attentions.py`,
-`pack_step_outputs.py`, `flatten_decoder_step.py`.
+`pack_step_outputs.py`, `flatten_decoder_step.py`,
+`scale_residual_stream.py`.
 
 ### Running a single pass
 
@@ -225,6 +259,7 @@ uv run python scripts/onnx/whisper/pad_attention_scores.py --input X --output Y
 uv run python scripts/onnx/whisper/trim_cross_attentions.py --input X --output Y --generation-config G
 uv run python scripts/onnx/whisper/pack_step_outputs.py --input X --output Y --generation-config G
 uv run python scripts/onnx/whisper/flatten_decoder_step.py --input X --step Y --cross Z
+uv run python scripts/onnx/whisper/scale_residual_stream.py --input X --output Y
 ```
 
 ## Publish
