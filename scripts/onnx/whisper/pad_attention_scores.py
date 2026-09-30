@@ -10,18 +10,24 @@ on every fourth step as the cache grows; cross-attention hits it on every step,
 because the key length is 1500. The corrupted hidden state then feeds the next
 layers' keys and values, so the cache carries the error to every later step.
 
-The attention score is `MatMul(Q, Transpose(K, perm=[0, 2, 1]))`. When the key
-length is a multiple of four, this appends one zero key column before the
-product and slices it off after:
+The attention score is `MatMul(Q, Transpose(K, perm=[0, 2, 1]))`. This appends
+one zero column to `Q` and one zero row to the transposed key, so the product
+runs with `K = 65`:
 
-    n      = Shape(Kt)[2]
-    pad    = Cast(Mod(n, 4) == 0)
-    scores = Slice(MatMul(Q, Pad(Kt, [0, 0, 0, 0, 0, pad])), 0:n on axis 2)
+    scores = MatMul(Pad(Q, [0, 0, 0, 0, 0, 1]), Pad(Kt, [0, 0, 0, 0, 1, 0]))
 
-`N + 1` is never a multiple of four, so the provider takes its scalar kernel,
-which is exact on the same device. The zero column produces a zero score that
-the slice drops, so the result is identical to the original product; the extra
-column costs one key per step.
+65 is never a multiple of four, so the provider takes its scalar kernel, which
+is exact on the same device. The added row and column multiply to zero, so every
+score is the number it was, and the output keeps its shape: no slice afterwards.
+
+Both paddings are constants, which is the point. Padding the key length instead
+would have to read that length at run time (`Shape -> Gather -> Mod -> Equal`),
+and shape arithmetic runs on the CPU provider: it splits the step's GPU work into
+pieces and forces a synchronisation around each attention. Measured on
+`decoder_model_merged_fp16` at 30 s of audio, the run-time form cost 64.1 ms per
+token on a desktop NVIDIA against 33.5 ms without any padding, and added 14 queue
+submissions per token; the head dimension is known at export and costs none of
+that.
 
     uv run python scripts/onnx/whisper/pad_attention_scores.py \
       --input  decoder_model_merged_fp16.onnx \
@@ -43,8 +49,7 @@ with contextlib.suppress(Exception):
     sys.stdout.reconfigure(encoding="utf-8")
 
 KEY_TRANSPOSE = [0, 2, 1]
-KEY_AXIS = 2
-PACKED_MULTIPLE = 4
+SCORE_RANK = 3
 PAD_PREFIX = "pad_attention_scores"
 
 
@@ -84,19 +89,16 @@ def count_affected(model):
 
 
 def rewrite(graph, index):
-    """Pad the key length past a multiple of four around each attention score."""
+    """Widen the head dimension of each attention score product by one."""
     targets = attention_scores(graph)
     if not targets:
         return 0
     prefix = f"{PAD_PREFIX}/{index}"
-    constants = {
-        "axis": np.array([KEY_AXIS], dtype=np.int64),
-        "multiple": np.array(PACKED_MULTIPLE, dtype=np.int64),
-        "zero": np.array(0, dtype=np.int64),
-        "pads_head": np.array([0, 0, 0, 0, 0], dtype=np.int64),
-        "start": np.array([0], dtype=np.int64),
-    }
-    for name, value in constants.items():
+    query_pads = np.zeros(2 * SCORE_RANK, dtype=np.int64)
+    query_pads[-1] = 1
+    key_pads = np.zeros(2 * SCORE_RANK, dtype=np.int64)
+    key_pads[-2] = 1
+    for name, value in (("query_pads", query_pads), ("key_pads", key_pads)):
         graph.initializer.append(numpy_helper.from_array(value, f"{prefix}/{name}"))
 
     rewritten = []
@@ -105,77 +107,26 @@ def rewrite(graph, index):
             rewritten.append(node)
             continue
         base = f"{prefix}/{node.name or node.output[0]}"
-        keys = node.input[1]
-        shape = f"{base}/shape"
-        length = f"{base}/length"
-        pad = f"{base}/pad"
-        padded = f"{base}/padded"
-        product = f"{base}/product"
+        query = f"{base}/query"
+        keys = f"{base}/keys"
         rewritten.extend(
             [
-                helper.make_node("Shape", [keys], [shape], name=shape),
                 helper.make_node(
-                    "Gather",
-                    [shape, f"{prefix}/axis"],
-                    [f"{length}_1d"],
-                    name=length,
-                    axis=0,
+                    "Pad",
+                    [node.input[0], f"{prefix}/query_pads"],
+                    [query],
+                    name=query,
+                    mode="constant",
                 ),
                 helper.make_node(
-                    "Squeeze",
-                    [f"{length}_1d", f"{prefix}/start"],
-                    [length],
-                    name=f"{length}/squeeze",
+                    "Pad",
+                    [node.input[1], f"{prefix}/key_pads"],
+                    [keys],
+                    name=keys,
+                    mode="constant",
                 ),
                 helper.make_node(
-                    "Mod",
-                    [length, f"{prefix}/multiple"],
-                    [f"{pad}/mod"],
-                    name=f"{pad}/mod",
-                ),
-                helper.make_node(
-                    "Equal",
-                    [f"{pad}/mod", f"{prefix}/zero"],
-                    [f"{pad}/packed"],
-                    name=f"{pad}/packed",
-                ),
-                helper.make_node(
-                    "Cast",
-                    [f"{pad}/packed"],
-                    [f"{pad}/count"],
-                    name=f"{pad}/count",
-                    to=onnx.TensorProto.INT64,
-                ),
-                helper.make_node(
-                    "Unsqueeze",
-                    [f"{pad}/count", f"{prefix}/start"],
-                    [f"{pad}/tail"],
-                    name=f"{pad}/tail",
-                ),
-                helper.make_node(
-                    "Concat",
-                    [f"{prefix}/pads_head", f"{pad}/tail"],
-                    [f"{pad}/pads"],
-                    name=f"{pad}/pads",
-                    axis=0,
-                ),
-                helper.make_node(
-                    "Pad", [keys, f"{pad}/pads"], [padded], name=padded, mode="constant"
-                ),
-                helper.make_node(
-                    "MatMul", [node.input[0], padded], [product], name=node.name
-                ),
-                helper.make_node(
-                    "Unsqueeze",
-                    [length, f"{prefix}/start"],
-                    [f"{length}_end"],
-                    name=f"{length}/end",
-                ),
-                helper.make_node(
-                    "Slice",
-                    [product, f"{prefix}/start", f"{length}_end", f"{prefix}/axis"],
-                    [node.output[0]],
-                    name=f"{base}/slice",
+                    "MatMul", [query, keys], [node.output[0]], name=node.name
                 ),
             ]
         )
@@ -189,7 +140,7 @@ def apply(model):
     for index, graph in enumerate(list(subgraphs(model.graph))):
         count = rewrite(graph, index)
         if count:
-            print(f"graph {index} ({graph.name}): {count} attention scores padded")
+            print(f"graph {index} ({graph.name}): {count} attention scores widened")
         total += count
     if not total:
         print("no attention score reaches the packed kernel; nothing to do")

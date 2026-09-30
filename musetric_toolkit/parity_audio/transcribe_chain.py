@@ -35,6 +35,8 @@ END_OF_TEXT = 50257
 ORIGINAL_ID = "openai/whisper-large-v3-turbo"
 ORIGINAL_REVISION = "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
 DECODER_FILE = "decoder_model_merged_fp16.onnx"
+CROSS_FILE = "cross_kv_fp16.onnx"
+BRANCH_INPUT = "use_cache_branch"
 MEDIAN_FILTER_WIDTH = 7
 TIME_PRECISION = 0.02
 
@@ -149,44 +151,72 @@ def token_times(
     return time[jumps] * TIME_PRECISION
 
 
-def teacher_forced_onnx(
-    session: ort.InferenceSession,
-    encoder_states: np.ndarray,
-    forced: list[int],
-    prompt_length: int,
-) -> np.ndarray:
-    """Logits of every position but the last: the prompt in one step without a
-    cache, then one token per step, as transformers.js runs the merged decoder."""
+def empty_past(session: ort.InferenceSession) -> dict[str, np.ndarray]:
     past = {}
     for model_input in session.get_inputs():
         if model_input.name.startswith("past_key_values."):
             _, heads, _, width = model_input.shape
             past[model_input.name] = np.zeros((1, heads, 0, width), dtype=np.float16)
+    return past
+
+
+def cross_past(
+    cross: ort.InferenceSession, states: np.ndarray
+) -> dict[str, np.ndarray]:
+    """The encoder states projected into the cache, as the flat step reads them."""
+    names = [output.name for output in cross.get_outputs()]
+    values = cross.run(names, {"encoder_hidden_states": states})
+    return {
+        name.replace("present.", "past_key_values."): value
+        for name, value in zip(names, values, strict=True)
+    }
+
+
+def teacher_forced_onnx(
+    session: ort.InferenceSession,
+    encoder_states: np.ndarray,
+    forced: list[int],
+    prompt_length: int,
+    cross: ort.InferenceSession | None = None,
+) -> np.ndarray:
+    """Logits of every position but the last, as transformers.js runs the decoder.
+
+    A merged decoder takes the prompt in one step without a cache, then one token
+    per step. A flat step has no first branch: `cross` projects the encoder states
+    into the cache once, and the prompt goes through the step one token at a time.
+    """
+    past = empty_past(session)
     names = [output.name for output in session.get_outputs()]
     states = encoder_states.astype(np.float32)
+    merged = any(
+        model_input.name == BRANCH_INPUT for model_input in session.get_inputs()
+    )
+    if merged:
+        prompt_steps = [forced[:prompt_length]]
+    else:
+        if cross is None:
+            raise ValueError("a flat decoder step needs its cross_kv projection")
+        past.update(cross_past(cross, states))
+        prompt_steps = [[token] for token in forced[:prompt_length]]
 
     def step(ids: list[int], use_cache: bool) -> dict[str, np.ndarray]:
-        values = session.run(
-            names,
-            {
-                **past,
-                "input_ids": np.asarray([ids], dtype=np.int64),
-                "encoder_hidden_states": states,
-                "use_cache_branch": np.asarray([use_cache]),
-            },
-        )
-        return dict(zip(names, values, strict=True))
-
-    outputs = step(forced[:prompt_length], use_cache=False)
-    logits = [outputs["logits"][0]]
-    for name in past:
-        past[name] = outputs[name.replace("past_key_values.", "present.")]
-    for position in range(prompt_length, len(forced) - 1):
-        outputs = step([forced[position]], use_cache=True)
-        logits.append(outputs["logits"][0])
+        feeds = {
+            **past,
+            "input_ids": np.asarray([ids], dtype=np.int64),
+            "encoder_hidden_states": states,
+        }
+        if merged:
+            feeds[BRANCH_INPUT] = np.asarray([use_cache])
+        values = session.run(names, feeds)
+        outputs = dict(zip(names, values, strict=True))
         for name in past:
-            if ".decoder." in name:
+            if ".decoder." in name or not use_cache:
                 past[name] = outputs[name.replace("past_key_values.", "present.")]
+        return outputs
+
+    logits = [step(ids, use_cache=not merged)["logits"][0] for ids in prompt_steps]
+    for position in range(prompt_length, len(forced) - 1):
+        logits.append(step([forced[position]], use_cache=True)["logits"][0])
     return np.concatenate(logits).astype(np.float64)
 
 
@@ -207,6 +237,7 @@ def run(args, writer: CaseWriter) -> None:
         GenerationConfig,
         WhisperFeatureExtractor,
     )
+    from transformers.modeling_outputs import BaseModelOutput  # noqa: PLC0415
 
     bundle = Path(args.onnx).parent
     language = args.language
@@ -233,10 +264,17 @@ def run(args, writer: CaseWriter) -> None:
 
     send_message({"type": "progress", "progress": 0.1})
     model = load_original(device)
+    # The bundle's alignment heads index the cross-attention outputs its decoder
+    # keeps; the torch model returns every head, so its times take the original's.
+    config.alignment_heads = model.generation_config.alignment_heads
     features_t = torch.from_numpy(features).to(device)
     with torch.inference_mode():
         encoded = model.model.encoder(features_t).last_hidden_state
     writer.tensor("encoder.output", "original", encoded.double().cpu().numpy())
+    # The encoder ran once above; `generate` and the forward pass take its output
+    # rather than running it again with `output_attentions`, which would keep the
+    # attention weights of its 32 layers, 5.8 GB in float32, that nothing reads.
+    encoder_outputs = BaseModelOutput(last_hidden_state=encoded)
     encoder = cpu_session(Path(args.onnx))
     (onnx_encoded,) = encoder.run(["last_hidden_state"], {"input_features": features})
     writer.tensor("encoder.output", "onnx-cpu", onnx_encoded)
@@ -244,6 +282,7 @@ def run(args, writer: CaseWriter) -> None:
     send_message({"type": "progress", "progress": 0.4})
     reference = model.generate(
         input_features=features_t,
+        encoder_outputs=encoder_outputs,
         generation_config=config,
         language=language,
         task="transcribe",
@@ -271,7 +310,7 @@ def run(args, writer: CaseWriter) -> None:
     send_message({"type": "progress", "progress": 0.6})
     with torch.inference_mode():
         forward = model(
-            input_features=features_t,
+            encoder_outputs=encoder_outputs,
             decoder_input_ids=torch.tensor([forced[:-1]], device=device),
             output_attentions=True,
         )
@@ -283,15 +322,19 @@ def run(args, writer: CaseWriter) -> None:
     )
     writer.tensor("result.tokens", "reference", text_rows(generated, times.tolist()))
     decoder = cpu_session(bundle / DECODER_FILE)
+    cross = (
+        cpu_session(bundle / CROSS_FILE) if (bundle / CROSS_FILE).is_file() else None
+    )
     writer.tensor(
         "decoder.logits",
         "onnx-cpu",
-        teacher_forced_onnx(decoder, onnx_encoded, forced, len(prompt)),
+        teacher_forced_onnx(decoder, onnx_encoded, forced, len(prompt), cross),
     )
 
     send_message({"type": "progress", "progress": 0.8})
     author = model.generate(
         input_features=features_t,
+        encoder_outputs=encoder_outputs,
         language=language,
         task="transcribe",
         return_timestamps=True,
