@@ -237,6 +237,7 @@ def run(args, writer: CaseWriter) -> None:
         GenerationConfig,
         WhisperFeatureExtractor,
     )
+    from transformers.modeling_outputs import BaseModelOutput  # noqa: PLC0415
 
     bundle = Path(args.onnx).parent
     language = args.language
@@ -270,6 +271,10 @@ def run(args, writer: CaseWriter) -> None:
     with torch.inference_mode():
         encoded = model.model.encoder(features_t).last_hidden_state
     writer.tensor("encoder.output", "original", encoded.double().cpu().numpy())
+    # The encoder ran once above; `generate` and the forward pass take its output
+    # rather than running it again with `output_attentions`, which would keep the
+    # attention weights of its 32 layers, 5.8 GB in float32, that nothing reads.
+    encoder_outputs = BaseModelOutput(last_hidden_state=encoded)
     encoder = cpu_session(Path(args.onnx))
     (onnx_encoded,) = encoder.run(["last_hidden_state"], {"input_features": features})
     writer.tensor("encoder.output", "onnx-cpu", onnx_encoded)
@@ -277,6 +282,7 @@ def run(args, writer: CaseWriter) -> None:
     send_message({"type": "progress", "progress": 0.4})
     reference = model.generate(
         input_features=features_t,
+        encoder_outputs=encoder_outputs,
         generation_config=config,
         language=language,
         task="transcribe",
@@ -304,7 +310,7 @@ def run(args, writer: CaseWriter) -> None:
     send_message({"type": "progress", "progress": 0.6})
     with torch.inference_mode():
         forward = model(
-            input_features=features_t,
+            encoder_outputs=encoder_outputs,
             decoder_input_ids=torch.tensor([forced[:-1]], device=device),
             output_attentions=True,
         )
@@ -328,6 +334,7 @@ def run(args, writer: CaseWriter) -> None:
     send_message({"type": "progress", "progress": 0.8})
     author = model.generate(
         input_features=features_t,
+        encoder_outputs=encoder_outputs,
         language=language,
         task="transcribe",
         return_timestamps=True,
