@@ -1,7 +1,8 @@
 """Stage the published Whisper file set from an export dir into the deps repo.
 
 `convert.py` writes many graphs (fp32 + q4, all decoder variants); the publish
-repo needs only the q4 encoder + merged decoder plus the tokenizer/config JSON.
+repo needs only the q4 encoder, the fp16 step decoder with its `cross_kv`
+projection, the merged q4 decoder and the tokenizer/config JSON.
 This copies exactly that set into `deps/whisper-large-v3-turbo-onnx/` (the folder
 `publish_whisper.py` uploads).
 
@@ -52,6 +53,7 @@ PUBLISH_FILES = [
     "normalizer.json",
     "encoder_model_q4.onnx",
     "decoder_model_merged_fp16.onnx",
+    "cross_kv_fp16.onnx",
     "decoder_model_merged_q4.onnx",
 ]
 

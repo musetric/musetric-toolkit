@@ -138,7 +138,7 @@ uv run python scripts/onnx/whisper/mobile_decoder.py \
   --output deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx
 ```
 
-## Narrow the cross-attention outputs (optional)
+## Narrow the cross-attention outputs
 
 `generate` asks the decoder for the cross-attention weights of every layer and
 gets all twenty heads of all four: `[batch, 20, tokens, 1500]` each, cast to
@@ -163,6 +163,54 @@ uv run python scripts/onnx/whisper/trim_cross_attentions.py   --input  deps/whis
 
 The config is rewritten in place, so the pass runs once per repository: a second
 run over an already narrowed graph would remap heads that are no longer there.
+The q4 decoder takes the same pass with a copy of the original config, which
+comes out identical and is dropped.
+
+## Pack what a step reads into one output
+
+On the WebGPU execution provider every output read back from the device is its
+own copy, queue submission and wait, about 3 ms on a desktop NVIDIA whether it
+holds a hundred values or a hundred thousand. A generation step reads the
+logits and the cross-attention heads the word times use.
+
+`pack_step_outputs.py` appends `step_outputs`, those tensors flattened and
+concatenated, and leaves the original outputs in place. A caller that fetches
+only the packed output and the key/value cache reads one tensor per step: on a
+30 s window a step goes from 31.3 ms with five tensors to 18.6 ms with one, the
+text and the word times unchanged. On CPU the packed tensor equals its pieces.
+
+```bash
+uv run python scripts/onnx/whisper/pack_step_outputs.py   --input  deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx   --output deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx   --generation-config deps/whisper-large-v3-turbo-onnx/generation_config.json
+```
+
+## Split the decoder into a flat step and cross K/V
+
+The merged decoder keeps its first step and its cached step as the two branches
+of an `If`, and ONNX Runtime fuses nothing through it: on the WebGPU provider a
+cached step costs 20.1 ms merged and 10.4 ms flat on a desktop NVIDIA, 49.7 and
+30.9 ms on an Adreno 750, outputs kept on the device in both.
+
+`flatten_decoder_step.py` writes the decoder with the `If` replaced by the
+cached branch, keeping `encoder_hidden_states` as an unread input so the
+pipeline still hands it over, and a `cross_kv` graph with the encoder states'
+key and value projections of every layer. The runtime recognizes the step by
+the missing `use_cache_branch` input, runs `cross_kv` once per window and
+feeds the prompt one token at a time; the parity reference does the same. On
+CPU that matches the merged first step to 0.004 at a logit scale of 21 and a
+cached step to 0.006, fp16 rounding, with the same argmax.
+
+The pass reads the projection weights of `MatMul` nodes, so it takes the fp16
+decoder only; the q4 decoder, whose projections are `MatMulNBits`, stays
+merged.
+
+```bash
+uv run python scripts/onnx/whisper/flatten_decoder_step.py   --input  deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx   --step   deps/whisper-large-v3-turbo-onnx/decoder_model_merged_fp16.onnx   --cross  deps/whisper-large-v3-turbo-onnx/cross_kv_fp16.onnx
+```
+
+The published set is then the q4 encoder, the fp16 step decoder with
+`cross_kv_fp16.onnx`, the merged q4 decoder and the JSON; the passes run in
+this order: `mobile_decoder.py`, `trim_cross_attentions.py`,
+`pack_step_outputs.py`, `flatten_decoder_step.py`.
 
 ### Running a single pass
 
@@ -174,6 +222,9 @@ uv run python scripts/onnx/whisper/block_attention.py --input X --output Y --que
 uv run python scripts/onnx/whisper/conv_to_matmul.py --input X --output Y
 uv run python scripts/onnx/whisper/transpose_to_gather.py --input X --output Y
 uv run python scripts/onnx/whisper/pad_attention_scores.py --input X --output Y
+uv run python scripts/onnx/whisper/trim_cross_attentions.py --input X --output Y --generation-config G
+uv run python scripts/onnx/whisper/pack_step_outputs.py --input X --output Y --generation-config G
+uv run python scripts/onnx/whisper/flatten_decoder_step.py --input X --step Y --cross Z
 ```
 
 ## Publish
