@@ -53,6 +53,9 @@ for t in graph.initializer:
 # WebGPU maxBufferSize cap. Dropping the casts keeps scores fp16 (1.16 GB), which
 # fits. After the export weight-sanitize the fp16 softmax is NaN-free
 # (the ~0.45% NaN was a single bad weight, not the softmax). See converting.md.
+# Only a Softmax wrapped on both sides is unwrapped: the time attentions of an
+# --all-fp16 core cast their scores to fp32 on purpose and feed the fp32
+# probabilities straight into their matmul with the values.
 producer = {o: n for n in graph.node for o in n.output}
 consumers: dict[str, list] = {}
 for n in graph.node:
@@ -64,19 +67,19 @@ removed_names: set[str] = set()
 n_softmax = 0
 for sm in [n for n in graph.node if n.op_type == "Softmax"]:
     c1 = producer.get(sm.input[0])
-    if (
-        c1 is not None
-        and c1.op_type == "Cast"
-        and len(consumers.get(c1.output[0], [])) == 1
-    ):
-        removed_ids.add(id(c1))
-        removed_names.add(c1.output[0])
-        sm.input[0] = c1.input[0]
     c2s = consumers.get(sm.output[0], [])
-    if len(c2s) == 1 and c2s[0].op_type == "Cast":
-        removed_ids.add(id(c2s[0]))
-        removed_names.add(sm.output[0])
-        sm.output[0] = c2s[0].output[0]
+    if (
+        c1 is None
+        or c1.op_type != "Cast"
+        or len(consumers.get(c1.output[0], [])) != 1
+        or len(c2s) != 1
+        or c2s[0].op_type != "Cast"
+    ):
+        continue
+    removed_ids.update({id(c1), id(c2s[0])})
+    removed_names.update({c1.output[0], sm.output[0]})
+    sm.input[0] = c1.input[0]
+    sm.output[0] = c2s[0].output[0]
     n_softmax += 1
 
 kept = [n for n in graph.node if id(n) not in removed_ids]

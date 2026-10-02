@@ -829,6 +829,8 @@ def export(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if all_fp16:
             moved = keep_band_split_fp32(model16, RMSNORM_EPS)
             print(f"  kept the band gather and {moved} band norms in fp32")
+            kept = keep_time_attention_fp32(model16, T)
+            print(f"  kept {kept} time-attention softmaxes and their p x V in fp32")
         assert_fp16_epsilon_safe(model16)
         assert_dispatch_rows_safe(model16)
         save_fp16(model16, output)
@@ -1199,6 +1201,112 @@ def keep_band_split_fp32(model, epsilon: float) -> int:
         if value.name in front_tensors:
             value.type.tensor_type.elem_type = onnx.TensorProto.FLOAT
     return len(norms)
+
+
+def keep_time_attention_fp32(model, frames: int) -> int:
+    """Run the softmax and the probabilities x values of every time attention in fp32.
+
+    A time attention normalizes its scores over the `frames` keys of the window, so
+    most of its probabilities are far below 1 / frames. In fp16 every probability
+    below 6.1e-5 is subnormal, and the Adreno 660 and 750 read it as zero and drop
+    every product below 2^-14 inside the matmul with the values. The time attentions
+    lose that tail in every layer, and the masks end up 3.3 dB further from
+    onnxruntime's CPU provider than on the desktop (musetric/musetric#988).
+
+    The scores are cast to fp32 for the softmax, the values to fp32 for the matmul
+    with the probabilities, and its output back to fp16. The attention's scale, a
+    power of two, moves from the scores onto the queries first, which is exact and
+    leaves no fp16 copy of the scaled scores. The band attentions normalize over 60
+    bands and keep fp16.
+
+    Returns the number of time attentions rewritten.
+    """
+    import onnx  # noqa: PLC0415
+    from onnx import numpy_helper  # noqa: PLC0415
+
+    graph = model.graph
+    producer, consumers = _io_maps(graph)
+    inits = {i.name: i for i in graph.initializer}
+    dims = {
+        v.name: [d.dim_value for d in v.type.tensor_type.shape.dim]
+        for v in graph.value_info
+    }
+    replace_at, remove, values_fp32 = {}, set(), {}
+    probabilities, scaled_scores, typed = set(), set(), []
+    for softmax in [n for n in graph.node if n.op_type == "Softmax"]:
+        if dims.get(softmax.input[0], [0])[-1] != frames:
+            continue
+        scale, (pv,) = producer[softmax.input[0]], consumers[softmax.output[0]]
+        scores = producer[scale.input[0]]
+        if (scale.op_type, scores.op_type, pv.op_type) != ("Mul", "MatMul", "MatMul"):
+            raise RuntimeError(f"unexpected time attention around {softmax.name}")
+        factor = float(numpy_helper.to_array(inits[scale.input[1]]))
+        if not np.log2(factor).is_integer():
+            raise RuntimeError(f"the scale {factor} of {softmax.name} is not 2^k")
+        queries = onnx.helper.make_node(
+            "Mul",
+            [scores.input[0], scale.input[1]],
+            [f"{scores.name}_scaled_queries"],
+            name=f"{scores.name}_scale_queries",
+        )
+        scores.input[0] = queries.output[0]
+        scores_fp32 = onnx.helper.make_node(
+            "Cast",
+            [scores.output[0]],
+            [f"{scores.output[0]}_fp32"],
+            name=f"{scores.name}_to_float32",
+            to=onnx.TensorProto.FLOAT,
+        )
+        softmax.input[0] = scores_fp32.output[0]
+        typed.append(
+            onnx.helper.make_tensor_value_info(
+                scores_fp32.output[0],
+                onnx.TensorProto.FLOAT,
+                dims[scale.output[0]],
+            )
+        )
+        probabilities.add(softmax.output[0])
+        scaled_scores.add(scale.output[0])
+        replace_at[scores.name] = [queries, scores, scores_fp32]
+        remove.update({scores.name, scale.name})
+
+        values = pv.input[1]
+        cast_values = []
+        if values not in values_fp32:
+            values_fp32[values] = f"{values}_fp32"
+            cast_values.append(
+                onnx.helper.make_node(
+                    "Cast",
+                    [values],
+                    [values_fp32[values]],
+                    name=f"{pv.name}_values_to_float32",
+                    to=onnx.TensorProto.FLOAT,
+                )
+            )
+        pv.input[1] = values_fp32[values]
+        fp16_output = pv.output[0]
+        pv.output[0] = f"{fp16_output}_fp32"
+        replace_at[pv.name] = [
+            *cast_values,
+            pv,
+            onnx.helper.make_node(
+                "Cast",
+                [pv.output[0]],
+                [fp16_output],
+                name=f"{pv.name}_to_float16",
+                to=onnx.TensorProto.FLOAT16,
+            ),
+        ]
+        remove.add(pv.name)
+    _rewrite_nodes(graph, remove, replace_at)
+
+    for value in graph.value_info:
+        if value.name in probabilities:
+            value.type.tensor_type.elem_type = onnx.TensorProto.FLOAT
+    kept = [v for v in graph.value_info if v.name not in scaled_scores]
+    del graph.value_info[:]
+    graph.value_info.extend([*kept, *typed])
+    return len(probabilities)
 
 
 def _band_split_front(producer: dict, norms: list) -> tuple[set, object]:
