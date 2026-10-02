@@ -31,6 +31,7 @@ from musetric_toolkit.separate_audio.roformer.mel_band_roformer import (
     FeedForward,
     MelBandRoformer,
     RMSNorm,
+    Transformer,
 )
 from musetric_toolkit.separate_audio.roformer_utils import dict_to_namespace
 
@@ -249,13 +250,15 @@ class RowChunkedFeedForward(nn.Module):
     height, so peak memory falls instead of rising.
     """
 
-    def __init__(self, net: nn.Sequential, parts: int) -> None:
+    def __init__(self, net: nn.Sequential, parts: int, dim: int = 0) -> None:
         super().__init__()
         self.net = net
         self.parts = parts
+        self.dim = dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.cat([self.net(c) for c in x.chunk(self.parts, dim=0)], dim=0)
+        chunks = x.chunk(self.parts, dim=self.dim)
+        return torch.cat([self.net(c) for c in chunks], dim=self.dim)
 
 
 class RowChunkedLinear(nn.Module):
@@ -334,6 +337,91 @@ def split_heavy_projections(
         module.forward = _attention_forward_unfused.__get__(module, Attention)
         attentions += 1
     return feeds, attentions
+
+
+def set_stream_slabs(model: MelBandRoformer, slabs: int) -> None:
+    """Run every time and band transformer over slabs of the stream, kept as rows.
+
+    Exact, fp16 included: nothing in a transformer layer reduces over its batch
+    axis, so every slab gets the arithmetic it got as part of the whole.
+
+    The point is onnxruntime's allocation planner. It hands a freed buffer only to
+    a later tensor of the same static shape and keeps it for that shape until the
+    run ends, so every distinct large shape holds its own pool for the whole run.
+    The published layout gives the time and band transformers different shapes of
+    the same size, [60, T, 384] and [T, 60, 384] plus their transposed copies, and
+    those pools sit idle in turn. Here the time transformer takes the bands in
+    `slabs` slabs and the band transformer the frames, each slab cut straight
+    from the [b, t, f, d] stream and held as [1, rows, d]; with `slabs` dividing
+    both 60 and T a band slab and a frame slab have the same rows, so the norms,
+    projections, feed-forwards and residual adds of both transformers produce the
+    same shapes and share their buffers. Only the [b, h, n, d] view inside
+    attention differs. A 3-D stream keeps every Linear a MatMul and an Add as in
+    the published graph, where a 2-D one would export as Gemm and change the bits.
+
+    Needs --split-rows: the slabs use the unfused q, k and v projections, and the
+    feed-forward row groups are cut along the rows axis.
+    """
+    for module in model.modules():
+        if isinstance(module, RowChunkedFeedForward):
+            module.dim = 1
+    model.net_forward = lambda stft_repr: _stream_slab_net_forward(
+        model, stft_repr, slabs
+    )
+
+
+def _stream_slab_net_forward(
+    model: MelBandRoformer, stft_repr: torch.Tensor, slabs: int
+) -> torch.Tensor:
+    """MelBandRoformer.net_forward with the transformer loop over stream slabs."""
+    batch = stft_repr.shape[0]
+    freq_indices = model.freq_indices.to(stft_repr.device)
+    batch_arange = torch.arange(batch, device=stft_repr.device)[..., None]
+    x = stft_repr[batch_arange, freq_indices]
+    x = rearrange(x, "b f t c -> b t (f c)")
+    x = model.band_split(x)
+    for time_transformer, freq_transformer in model.layers:
+        outs = []
+        for slab in x.chunk(slabs, dim=2):
+            bands = slab.shape[2]
+            rows = rearrange(slab, "b t f d -> b (f t) d")
+            rows = _transformer_over_rows(time_transformer, rows, bands)
+            outs.append(rearrange(rows, "b (f t) d -> b t f d", f=bands))
+        x = torch.cat(outs, dim=2)
+        outs = []
+        for slab in x.chunk(slabs, dim=1):
+            frames = slab.shape[1]
+            rows = rearrange(slab, "b t f d -> b (t f) d")
+            rows = _transformer_over_rows(freq_transformer, rows, frames)
+            outs.append(rearrange(rows, "b (t f) d -> b t f d", t=frames))
+        x = torch.cat(outs, dim=1)
+    masks = torch.stack([fn(x) for fn in model.mask_estimators], dim=1)
+    return rearrange(masks, "b n t (f c) -> b n f t c", c=2)
+
+
+def _transformer_over_rows(
+    transformer: Transformer, x: torch.Tensor, batch: int
+) -> torch.Tensor:
+    """Transformer.forward on a [1, batch * n, d] stream."""
+    for attn, ff in transformer.layers:
+        x = _attention_over_rows(attn, x, batch) + x
+        x = ff(x) + x
+    return transformer.norm(x)
+
+
+def _attention_over_rows(attn: Attention, x: torch.Tensor, batch: int) -> torch.Tensor:
+    """The unfused Attention.forward on a [1, batch * n, d] stream."""
+    x = attn.norm(x)
+    q = rearrange(attn.to_q(x), "o (b n) (h d) -> (o b) h n d", b=batch, h=attn.heads)
+    k = rearrange(attn.to_k(x), "o (b n) (h d) -> (o b) h n d", b=batch, h=attn.heads)
+    v = rearrange(attn.to_v(x), "o (b n) (h d) -> (o b) h n d", b=batch, h=attn.heads)
+    if attn.rotary_embed is not None:
+        q = attn.rotary_embed.rotate_queries_or_keys(q)
+        k = attn.rotary_embed.rotate_queries_or_keys(k)
+    out = attn.attend(q, k, v)
+    gates = rearrange(attn.to_gates(x), "o (b n) h -> (o b) h n 1", b=batch)
+    out = out * gates.sigmoid()
+    return attn.to_out(rearrange(out, "b h n d -> 1 (b n) (h d)"))
 
 
 class RowChunkedRMSNorm(nn.Module):
@@ -490,6 +578,16 @@ def main() -> None:
         "height, the longest dispatches of a run on Adreno 660.",
     )
     p.add_argument(
+        "--stream-slabs",
+        type=int,
+        default=0,
+        help="with --split-rows, run every time and band transformer over this "
+        "many slabs of the stream, each held as [1, rows, 384] (0 = off). Exact; "
+        "a divisor of both 60 and T makes the time and band slabs the same shape, "
+        "so onnxruntime's planner shares their buffers and the peak memory of a "
+        "run falls by more than half.",
+    )
+    p.add_argument(
         "--core-only",
         action="store_true",
         help="export the web core (stft_repr -> per-bin masks), NOT the full "
@@ -525,6 +623,9 @@ def main() -> None:
                 else ""
             )
         )
+    if args.stream_slabs:
+        set_stream_slabs(model, args.stream_slabs)
+        print(f"every transformer runs over {args.stream_slabs} stream slabs")
     norms, attends = cap_dispatch_rows(model)
     print(
         f"capped dispatch rows at {WEBGPU_DISPATCH_ROWS} over {norms} norms "

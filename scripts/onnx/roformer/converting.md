@@ -34,7 +34,7 @@ at <https://huggingface.co/musetric/aname-mel-band-roformer-duality-onnx>:
 
 | File | SHA256 |
 |---|---|
-| `duality_core_t1100.onnx` | `87f97dddaf06cb02144529810c5cf42588e8af174700996ad181dbd9092355fb` |
+| `duality_core_t1100.onnx` | `0d33bf5e075e656233e9bf434101c561cae18bbe68f33ac0aa12c9566b7e5b43` |
 | `duality_core_t1100.onnx.data` | `ba2a1daacde1608a57564c7bb24a3efe2f50388b2168143044019a6cbe3f21c6` |
 
 Download both files into `tmp/models` (the `.data` file must sit next to its graph):
@@ -70,8 +70,8 @@ uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
   --checkpoint tmp/models/mel_band_roformer_duality/model.ckpt \
   --config tmp/models/mel_band_roformer_duality/config.yaml \
   --output tmp/models/core_t1100.onnx \
-  --core-only --fuse-rmsnorm --attn-block 64 --all-fp16 --frames 1100 --skip-gate \
-  --split-rows 8 --split-projections 4
+  --core-only --fuse-rmsnorm --attn-block 256 --all-fp16 --frames 1100 --skip-gate \
+  --split-rows 2 --stream-slabs 4
 
 uv run --group export python scripts/onnx/roformer/split_concat_webgpu.py \
   --input tmp/models/core_t1100.onnx \
@@ -88,9 +88,10 @@ What each flag is for:
 
 - `--core-only` exports `stft_repr -> masks` rather than the full
   `raw_audio -> vocals` graph, because the host owns the STFT/iSTFT.
-- `--attn-block 64` caps the attention score tensor at `[60, 8, 64, T]` instead
-  of `[60, 8, T, T]`. Exact — softmax normalizes each query row over the full key
-  axis on its own — and it is what keeps the graph inside a mobile
+- `--attn-block 256` caps the attention score tensor of a slab at
+  `[15, 8, 256, T]` instead of `[15, 8, T, T]`, the size the core without slabs
+  had at `--attn-block 64`. Exact — softmax normalizes each query row over the
+  full key axis on its own — and it is what keeps the graph inside a mobile
   storage-buffer binding, which stops working past 256 MiB whatever limit the
   adapter declares.
 - `--fuse-rmsnorm` gives the normalization a single `ai.onnx::RMSNormalization`
@@ -98,8 +99,10 @@ What each flag is for:
 - `--all-fp16` drops the fp32 pins, which the fused RMSNorm makes safe. Without
   it the `[T, 60, 1536]` activations become 387 MiB fp32 tensors with a cast copy
   each at T = 1100.
-- `--split-rows 8 --split-projections 4` shortens the longest dispatches; see
-  below.
+- `--split-rows 2` shortens the longest dispatches; see below.
+- `--stream-slabs 4` runs every transformer over four slabs of the stream, so
+  onnxruntime shares buffers between the time and band transformers and a run
+  holds less than half the GPU memory; see below.
 - `split_concat_webgpu.py` re-trees wide `Concat`/`Split` to <=8-wide so every
   shader stays at <=9 storage buffers, under the strictest shipping cap
   (Dawn/Metal on macOS reports `maxStorageBuffersPerShaderStage = 10`).
@@ -190,8 +193,10 @@ does not change.
 
 ## Shorten the Longest Dispatches
 
-`--split-rows N` and `--split-projections N` are aimed at mobile GPUs, and the
-published core is built with `--split-rows 8 --split-projections 4`. A run of
+`--split-rows N` and `--split-projections N` are aimed at mobile GPUs. The
+published core used `--split-rows 8 --split-projections 4` until it moved to
+stream slabs (below), whose slabs already cut every matmul of a layer to a
+quarter of its rows, so it now needs `--split-rows 2` alone. A run of
 this core is
 dominated by a handful of very long matmuls: the feed-forward projections and
 the fused qkv projection of each layer are each a single dispatch tens of times
@@ -233,6 +238,58 @@ because the wide intermediate is never built at full height.
 
 Run the same validation as any other core afterwards. Peak GPU memory falls
 rather than rises, and total time moves by about a percent.
+
+## Run the Transformers over Stream Slabs
+
+`--stream-slabs N` runs the time transformer of every layer over `N` slabs of
+the bands and the band transformer over `N` slabs of the frames. Each slab is cut
+straight from the `[1, T, 60, 384]` stream, runs through attention, feed-forward
+and the output norm as `[1, rows, 384]`, and goes back by one `Concat`. Nothing
+in a transformer layer reduces over its batch axis, so the slabs change no
+arithmetic: on WebGPU, on the desktop NVIDIA and on the Adreno 750 and 660, the
+masks are bit for bit those of the core without them. onnxruntime's CPU
+provider picks its matmul kernels by shape, and there the two cores differ by
+fp16 rounding, 60 dB.
+
+The point is onnxruntime's allocation planner. It hands a freed buffer only to a
+later tensor of the same static shape and keeps it for that shape until the run
+ends, so every distinct large shape holds a pool of its own for the whole run.
+Without slabs the two transformers of a layer see `[60, T, 384]` and
+`[T, 60, 384]`, the same size in different shapes, plus the transposed and
+packed copies between them, and those pools sit idle in turn. With `N` dividing
+both 60 and `T` a band slab and a frame slab hold the same rows, 16500 at
+`N = 4` and T = 1100, so the norms, projections, feed-forwards and residual adds
+of both transformers produce the same shapes and share their buffers; only the
+`[b, h, n, d]` view inside attention differs. The stream stays 3-D because a
+`Linear` on a 2-D input exports as `Gemm`, whose fused bias changes the bits.
+
+`--attn-block` grows with the slabs, `64 * N`, so that the attention of a slab
+runs in as many dispatches as the core without slabs, and `--split-rows 2`
+inside a slab leaves feed-forward row groups of 8250 rows, as before.
+
+A run of the published core at T = 1100 with onnxruntime-web 1.30 on WebGPU,
+`storageBufferCacheMode: 'simple'` as the app sets it, on a synthetic input:
+
+| | without slabs | `--stream-slabs 4` |
+|---|---|---|
+| GPU buffers onnxruntime holds at the peak, RTX 3060 Laptop | 3747 MiB | 1767 MiB |
+| Whole-GPU memory during a run (`dumpsys gpu`), Adreno 750 | 4280 MiB | 2282 MiB |
+| Whole-GPU memory during a run (`dumpsys gpu`), Adreno 660 | 4358 MiB | 2282 MiB |
+| Footprint of the Safari tab on iPad Air (M3), killed at 5120 MiB | killed in the first run | a 23-chunk track, 4898 MiB at most |
+
+The weights account for 436 MiB of each count. The iPad figure is the app's
+run with onnxruntime's graph capture. The tab holds 2.4 GiB through most of the
+track; the peak comes in its first one or two minutes, when WebKit keeps about
+2 GiB more and then gives it back on its own, and where that memory comes from
+is still open. The time per
+chunk in the app stays within the spread of alternating loads on the desktop,
+the Adreno 750 and the Adreno 660; building the session takes about a second
+longer, since the graph is larger.
+
+Four is the count that keeps the time. Five slabs (`--attn-block 320`) hold
+1641 MiB, but a chunk of the app takes 26 s on the Adreno 750 against 16 s
+without slabs. Two slabs (`--attn-block 128 --split-rows 4`) keep the time but
+hold 2261 MiB, and the iPad tab peaks at 4953 MiB, too close to its limit.
 
 ## Keep the Published Weights File
 
