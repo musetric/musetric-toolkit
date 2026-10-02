@@ -34,7 +34,7 @@ at <https://huggingface.co/musetric/aname-mel-band-roformer-duality-onnx>:
 
 | File | SHA256 |
 |---|---|
-| `duality_core_t1100.onnx` | `0d33bf5e075e656233e9bf434101c561cae18bbe68f33ac0aa12c9566b7e5b43` |
+| `duality_core_t1100.onnx` | `4a320d23b6361c1c7920f7e95184fe4195447c2dee18cab17ca5c2579cc1bdf7` |
 | `duality_core_t1100.onnx.data` | `ba2a1daacde1608a57564c7bb24a3efe2f50388b2168143044019a6cbe3f21c6` |
 
 Download both files into `tmp/models` (the `.data` file must sit next to its graph):
@@ -70,7 +70,7 @@ uv run --group export python scripts/onnx/roformer/build_full_onnx.py \
   --checkpoint tmp/models/mel_band_roformer_duality/model.ckpt \
   --config tmp/models/mel_band_roformer_duality/config.yaml \
   --output tmp/models/core_t1100.onnx \
-  --core-only --fuse-rmsnorm --attn-block 256 --all-fp16 --frames 1100 --skip-gate \
+  --core-only --fuse-rmsnorm --attn-block 128 --all-fp16 --frames 1100 --skip-gate \
   --split-rows 2 --stream-slabs 4
 
 uv run --group export python scripts/onnx/roformer/split_concat_webgpu.py \
@@ -88,12 +88,12 @@ What each flag is for:
 
 - `--core-only` exports `stft_repr -> masks` rather than the full
   `raw_audio -> vocals` graph, because the host owns the STFT/iSTFT.
-- `--attn-block 256` caps the attention score tensor of a slab at
-  `[15, 8, 256, T]` instead of `[15, 8, T, T]`, the size the core without slabs
-  had at `--attn-block 64`. Exact — softmax normalizes each query row over the
-  full key axis on its own — and it is what keeps the graph inside a mobile
-  storage-buffer binding, which stops working past 256 MiB whatever limit the
-  adapter declares.
+- `--attn-block 128` caps the attention score tensor of a slab at
+  `[15, 8, 128, T]` instead of `[15, 8, T, T]`. Exact — softmax normalizes each
+  query row over the full key axis on its own — and it is what keeps the graph
+  inside a mobile storage-buffer binding, which stops working past 256 MiB
+  whatever limit the adapter declares. The time attentions hold that block in
+  fp32 (below), 64.5 MiB, the size the fp16 block of 256 rows had.
 - `--fuse-rmsnorm` gives the normalization a single `ai.onnx::RMSNormalization`
   kernel that accumulates the sum of squares in `f32` inside the shader.
 - `--all-fp16` drops the fp32 pins, which the fused RMSNorm makes safe. Without
@@ -191,6 +191,49 @@ the CPU provider of the same graph / against torch:
 The Adreno 750 and the Adreno 660 return the same bits, and the time per unit
 does not change.
 
+## Keep the Time Attention's Probabilities in fp32
+
+`--all-fp16` applies this; there is no flag. A time attention normalizes its
+scores over the T keys of the window, so most of its probabilities lie far below
+1 / T, and in fp16 every one below 6.1e-5 is subnormal. Adreno GPUs read those as
+zero and drop every product below 2^-14 inside the matmul with the values, so
+each time attention loses the tail of its probabilities, the same way in every
+layer. The desktop computes the same fp16 graph with subnormals; on the Adreno
+660 and 750 the masks stayed 1.8-3.3 dB further from onnxruntime's CPU provider
+(musetric/musetric#988). A softmax in fp32 alone does not help while its
+probabilities are stored in fp16, and scaling them by 2^10 before the fp16 cast,
+as the Whisper decoder does, closes about half of the gap: the matmul with the
+values needs them in fp32.
+
+`keep_time_attention_fp32` casts the scores of every attention whose softmax
+runs over T keys to fp32, takes the softmax and the matmul with the values in
+fp32, and casts the result back to fp16. The attention's scale, 2^-3, moves from
+the scores onto the queries, which is exact and leaves no fp16 copy of the
+scaled scores. The band attentions normalize over 60 bands and stay in fp16.
+`split_concat_webgpu.py` unwraps only a softmax with a Cast on both sides, so it
+leaves these alone.
+
+The same four units against the CPU provider of the same graph:
+
+| Core | Desktop NVIDIA | Adreno 750 and 660 | Apple M3 (iPad Air) |
+|---|---|---|---|
+| time attention in fp16 | 37.6-42.0 dB | 34.9-39.8 dB | 37.3-41.9 dB |
+| time attention in fp32 | 43.2-45.1 dB | 43.5-44.6 dB | 42.7-45.3 dB |
+
+Every device moves closer to the CPU provider, and the phones now stay within
+0.7 dB of the desktop on every unit. Against torch on the model card's 13
+JamendoLyrics windows, both on CUDA, the core scores 61.2 / 66.7 / 71.0 dB
+(worst / median / best), against 61.5 / 67.0 / 71.0 dB before.
+
+The cost: onnxruntime holds 1913 MiB of GPU buffers at the peak against 1767 MiB,
+and the whole GPU of the Adreno 750 and 660 holds 2484 and 2434 MiB against
+2282 MiB. In the app, paced and with graph capture, a chunk takes about 10 %
+longer on the desktop, 8 % on the Adreno 750 and 3-4 % on the Adreno 660. The
+first chunk of a load, which compiles the shaders, holds the page somewhat
+longer: at worst 2.8, 3.1 and 5.3 s on those devices against 2.5, 2.6 and 5.0 s,
+and 5.0-7.1 s on the iPad against 2.1-3.0 s. The iPad tab still runs a 23-chunk
+track, at most 4927 MiB.
+
 ## Shorten the Longest Dispatches
 
 `--split-rows N` and `--split-projections N` are aimed at mobile GPUs. The
@@ -263,9 +306,8 @@ of both transformers produce the same shapes and share their buffers; only the
 `[b, h, n, d]` view inside attention differs. The stream stays 3-D because a
 `Linear` on a 2-D input exports as `Gemm`, whose fused bias changes the bits.
 
-`--attn-block` grows with the slabs, `64 * N`, so that the attention of a slab
-runs in as many dispatches as the core without slabs, and `--split-rows 2`
-inside a slab leaves feed-forward row groups of 8250 rows, as before.
+`--split-rows 2` inside a slab leaves feed-forward row groups of 8250 rows, as
+before.
 
 A run of the published core at T = 1100 with onnxruntime-web 1.30 on WebGPU,
 `storageBufferCacheMode: 'simple'` as the app sets it, on a synthetic input:
@@ -290,6 +332,8 @@ Four is the count that keeps the time. Five slabs (`--attn-block 320`) hold
 1641 MiB, but a chunk of the app takes 26 s on the Adreno 750 against 16 s
 without slabs. Two slabs (`--attn-block 128 --split-rows 4`) keep the time but
 hold 2261 MiB, and the iPad tab peaks at 4953 MiB, too close to its limit.
+The figures in this section are from before the time attentions moved to fp32
+(above).
 
 ## Keep the Published Weights File
 
