@@ -1,48 +1,77 @@
-# UVR-MDX-NET KARA2 → WebGPU-safe static graph
+# UVR-MDX-NET KARA2 → WebGPU graph with time bands in the batch
 
 The lead/backing separation step runs `UVR_MDXNET_KARA_2.onnx`, a convolutional
-U-Net over a `[1, 4, 2048, 256]` complex spectrogram. On Adreno 6xx the
-onnxruntime-web WebGPU kernels for `BatchNormalization`, `Conv` and
-`ConvTranspose` corrupt this graph nondeterministically, while `Transpose`,
-`MatMul`, `Relu`, `Add` and `Mul` compute it correctly.
+U-Net over a `[1, 4, 2048, 256]` complex spectrogram: 236 GMAC per chunk, most of
+it in `3×3` convolutions over the full `256 × 2048` plane.
 
-`rewrite_static_adreno.py` rebuilds the graph from the working operators only:
+## Why the graph is rewritten
 
-| Source | Rewrite |
+onnxruntime-web runs `Conv`, `ConvTranspose` and `BatchNormalization` on
+WebGPU in NHWC and inserts a layout `Transpose` around each of them. For a
+batch of one that `Transpose` reduces to a single `[C, H·W]` matrix swap, which
+takes the tiled kernel that loses a quarter of its writes on Adreno 6xx. The
+operators themselves compute correctly there. Probed one by one on an Adreno 660
+with the model's own weights:
+
+| Operator | Batch 1, NHWC | Batch 2, NHWC | Batch 1, NCHW layout |
+|---|---|---|---|
+| `Transpose` NCHW → NHWC | wrong, 5.9 dB | exact | — |
+| `Conv` `3×3`, `2×2` stride 2, `1×1` | wrong, 5–8 dB | 143.5 dB to exact | 143.5 dB to exact, the `3×3` at half the speed |
+| `ConvTranspose` `2×2` stride 2 | wrong, 4.1 dB | 137.2 dB | 137.2 dB |
+| `BatchNormalization` | wrong, 5.5 dB | 145.1 dB | — |
+
+The graph published up to revision `8f6d5fef` avoided those operators
+altogether: a static rewrite (in this folder's history as
+`rewrite_static_adreno.py`) unrolled every convolution into `MatMul`s. It was
+correct everywhere and 1.1–2.1 times as slow as the original operators.
+
+## The fold
+
+`fold_time_bands.py` keeps every operator of the original graph and holds each
+tensor of the U-Net body, `[1, C, T, F]` in the source, as `[B, C, T / B, F]`:
+`B` consecutive bands of time frames, one per batch item, so every layout
+transpose onnxruntime inserts transposes a batch of matrices.
+
+| Source | In the fold |
 |---|---|
-| `BatchNormalization` | `Mul` + `Add` with folded running statistics |
-| `Conv` | sum over kernel offsets: `Pad` → `Slice` with the stride → `Reshape` to `[C_in, H·W]` → weight-left `MatMul` |
-| `ConvTranspose`, kernel = stride | one weight-left `MatMul` per kernel offset, interleaved with `Concat` + `Reshape` |
-| `Conv` over a plane larger than `--max-columns` positions | the same, band by band of output rows, joined with `Concat` |
+| `Conv` `3×3`, pad 1 | halo rows from the neighbouring bands (zeros at the plane's ends) → `Concat` along time → the same `Conv` with no padding along time |
+| `Conv` `2×2` stride 2, `ConvTranspose` `2×2` stride 2 | unchanged: they pair frames inside a band |
+| frequency-axis `MatMul`, `BatchNormalization`, `Relu`, `Add`, `Mul` | unchanged: they act per frame |
+| input `1×1` `Conv` and `Relu` | after the first `Transpose`, on the bands |
+| output `1×1` `Conv` | a `MatMul` on the bands, then a rank-3 `Reshape` before the bands are joined back into time |
 
-The rewrite pins batch 1 and the source input shape. It adds no transposition
-and no per-position index tables, so the file size stays that of the source.
+The output convolution is a `MatMul` because an NHWC convolution there lets
+onnxruntime move its layout transpose past the join onto a batch of one, which
+is wrong on Adreno 660 again. Every slice of the halo exchange keeps `B − 1`
+bands, so `B` is at least 3; it must divide the frame count of every U-Net
+level (256 down to 8).
 
 ```sh
-uv run python scripts/onnx/kara2/rewrite_static_adreno.py \
-  --model UVR_MDXNET_KARA_2.onnx --out kara2_adreno.onnx \
-  --max-columns 65536 --check
+uv run python scripts/onnx/kara2/fold_time_bands.py \
+  --model UVR_MDXNET_KARA_2.onnx --out kara2.onnx --bands 4 --check
 ```
 
-`--max-columns 65536` is how the published graph is built. At full resolution a
-`3×3` convolution becomes nine `MatMul`s over all 524288 positions of the
-`256 × 2048` plane. onnxruntime-web submits 16 dispatches at a time, so on
-Adreno 660 one submission of them keeps the GPU for about half a second, and
-nothing else on the phone draws in that time. Cutting the plane into bands of at
-most 65536 positions splits the full-resolution convolutions in eight and the
-half-resolution ones in two. The arithmetic of every position is unchanged, so
-the output stays bit-identical on WebGPU. Without the flag the rewrite is the
-same graph as before, byte for byte.
+`--bands 4` is how the published graph is built: 428 nodes, the size of the
+source. `--check` fails unless the CPU provider's output stays within `1e-4` of
+the source's; with 4 bands it is exact.
 
-`--check` runs the source and the rewrite on the CPU provider with the same
-deterministic input and fails when they differ by more than `1e-3`. Device
-parity is checked separately: the rewrite on WebGPU against the wasm provider
-on the same device, with the same input bytes.
+On WebGPU the output equals the source graph's on the same device on desktop
+NVIDIA, Adreno 750 and Apple M3, and is the same on Adreno 750 and Adreno 660.
+Against the rewrite, three loads of each alternated:
+
+| | RTX 3060 Laptop | Adreno 750 | Adreno 660 | Apple M3 (iPad Air) |
+|---|---|---|---|---|
+| Chunk, p50 | 670 → 329 ms | 3202 → 1926 ms | 8241 → 7211 ms | 3892 → 1592 ms |
+| Foreign GPU job wait, p95 | 5 → 8 ms | 93 → 215 ms | 131 → 765 ms | 32 → 60 ms |
+| Peak GPU memory | 1.69 → 1.21 GiB | 1.92 → 1.44 GiB | 1.90 → 1.42 GiB | 3.96 → 1.92 GiB (the tab's process) |
+
+Each full-resolution convolution is one dispatch now, so a phone GPU stays
+busy for longer stretches: the foreign job wait is the price of the speed.
 
 ## Publication
 
-The rewrite is published as
+The graph is published as `kara2.onnx` in
 [`musetric/uvr-mdxnet-kara2-onnx`](https://huggingface.co/musetric/uvr-mdxnet-kara2-onnx)
-with the model card. The graph there is built by this script from the UVR
-release file
-`UVR_MDXNET_KARA_2.onnx` (sha256 `bf32e151…cbf5f4`) and saved as `kara2.onnx`.
+with the model card, built by `fold_time_bands.py --bands 4` from the UVR
+release file `UVR_MDXNET_KARA_2.onnx` (sha256 `bf32e151…cbf5f4`): sha256
+`f90e997a…e4ba12`, 52,832,612 bytes.
