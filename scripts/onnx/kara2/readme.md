@@ -61,9 +61,9 @@ Against the rewrite, three loads of each alternated:
 
 | | RTX 3060 Laptop | Adreno 750 | Adreno 660 | Apple M3 (iPad Air) |
 |---|---|---|---|---|
-| Chunk, p50 | 670 → 329 ms | 3202 → 1926 ms | 8241 → 7211 ms | 3845 → 1815 ms |
-| Foreign GPU job wait, p95 | 5 → 8 ms | 93 → 215 ms | 131 → 765 ms | 44 → 74 ms |
-| Peak GPU memory | 1.69 → 1.21 GiB | 1.92 → 1.44 GiB | 1.90 → 1.42 GiB | — |
+| Chunk, p50 | 670 → 329 ms | 3202 → 1926 ms | 8241 → 7211 ms | 3892 → 1592 ms |
+| Foreign GPU job wait, p95 | 5 → 8 ms | 93 → 215 ms | 131 → 765 ms | 32 → 60 ms |
+| Peak GPU memory | 1.69 → 1.21 GiB | 1.92 → 1.44 GiB | 1.90 → 1.42 GiB | 3.96 → 1.92 GiB (the tab's process) |
 
 Each full-resolution convolution is one dispatch now, so a phone GPU stays
 busy for longer stretches: the foreign job wait is the price of the speed.
