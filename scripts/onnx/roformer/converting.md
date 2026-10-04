@@ -34,7 +34,7 @@ at <https://huggingface.co/musetric/aname-mel-band-roformer-duality-onnx>:
 
 | File | SHA256 |
 |---|---|
-| `duality_core_t1100.onnx` | `4a320d23b6361c1c7920f7e95184fe4195447c2dee18cab17ca5c2579cc1bdf7` |
+| `duality_core_t1100.onnx` | `1ae7a97c87d854cc27259a5be5115adfe8e44d046390819a6b2fe259465f5a77` |
 | `duality_core_t1100.onnx.data` | `ba2a1daacde1608a57564c7bb24a3efe2f50388b2168143044019a6cbe3f21c6` |
 
 Download both files into `tmp/models` (the `.data` file must sit next to its graph):
@@ -60,8 +60,9 @@ uv sync --group export
 
 ## Build a Core
 
-Four steps: export, re-tree the wide `Concat`/`Split` nodes, audit the epsilon,
-audit the dispatch rows. The checkpoint and config are the ones
+Five steps: export, re-tree the wide `Concat`/`Split` nodes, audit the epsilon,
+audit the dispatch rows, and fuse the node chains onnxruntime-web runs as one
+kernel each (see below). The checkpoint and config are the ones
 `musetric_toolkit/common/envs.py` downloads (`duality_v1.ckpt` and
 `config_v1.yaml` at the pinned revision).
 
@@ -82,7 +83,13 @@ uv run --group export python scripts/onnx/roformer/fp16_epsilon_audit.py \
 
 uv run --group export python scripts/onnx/roformer/dispatch_rows_audit.py \
   tmp/models/duality_core_t1100.onnx
+
+uv run python scripts/onnx/roformer/fuse_webgpu_kernels.py \
+  --model tmp/models/duality_core_t1100.onnx \
+  --out tmp/models/fused/duality_core_t1100.onnx
 ```
+
+The fused graph reads the same `.onnx.data`; put it next to the output.
 
 What each flag is for:
 
@@ -366,6 +373,54 @@ rule, and `fp16_epsilon_audit.py` re-checks any artifact, including ones built
 elsewhere. This shipped broken once — `epsilon=1e-12` on all 96 fp16 nodes — and
 `packages/mobile/docs/iosWebgpu.md` in the `musetric` repository carries the
 device measurements.
+
+## Fuse Node Chains for onnxruntime-web
+
+onnxruntime-web runs every node as one dispatch over its whole tensor, and the
+exported core spells four things as chains of nodes:
+
+| what | exported as | rewritten as | count |
+|---|---|---|---|
+| GELU of the feed-forwards | `Div`, `Erf`, `Add`, `Mul`, `Mul` | `Gelu` | 96 |
+| rotary embedding of the queries and keys | `Mul`, two `Slice`s, `Neg`, `Concat`, `Mul`, `Add` | `RotaryEmbedding`, interleaved | 96 |
+| projection to heads | `MatMul`, then a `Transpose` that puts the heads ahead of the sequence | one `MatMul` batched over the heads | 144 |
+| query scale of the time attentions | a `Slice` and a `Mul` per block of query rows | one `Mul`, then a `Split` | 24 |
+
+onnxruntime runs the GELU chain of this graph node by node. The last step of
+**Build a Core** rewrites the chains into those kernels; on a rebuild that keeps
+the published weights file, run it on the output of `reuse_external_data.py`.
+
+The weights and their file stay as they are: the batched projection reshapes
+the stored weight and the rotary kernel takes every other column of the stored
+tables, and onnxruntime folds both at load. A run goes from 4939 dispatches to
+3475, and every new node is a standard `ai.onnx` operator (`Gelu` from opset
+20, `RotaryEmbedding` from 23). On WebGPU the masks are the same bits as
+those of the core without the rewrite on a desktop NVIDIA GPU and on the
+Adreno 750 and 660; on Apple's M3 they differ by rounding. onnxruntime's CPU
+and CUDA providers round these kernels differently from the chains: 66 dB from
+the core without the rewrite on the CPU provider.
+
+Against the core without the rewrite, on 2026-10-04. The GPU time sums the
+timestamps of every dispatch of one run; the chunk is musetric's, paced one
+submission at a time with graph capture, three loads of each core in A-B-B-A-A-B
+order:
+
+| runtime | GPU time of a chunk | chunk p50 | peak GPU memory |
+|---|---|---|---|
+| RTX 3060 Laptop, Chrome | 1798 → 1611 ms | 2190 → 1900 ms | 2.59 → 2.25 GiB |
+| Galaxy S24 Ultra, Adreno 750, Chrome | 13.4 → 12.7 s | 29.9 → 16.5 s | 2.44 → 2.17 GiB |
+| OnePlus 9RT, Adreno 660, Chrome | 39.6 → 37.2 s | 70.5 → 38.4 s | 2.47 → 2.25 GiB |
+| iPad Air (M3), Safari 26.4 | 14.0 → 12.7 s | 15.0 → 14.2 s | 4.74 → 4.43 GiB |
+
+Under the pacer the Adreno 750's clock governor holds a higher clock for the
+fused core, 629 MHz for half of a chunk against 422-500 MHz for two thirds of
+one without the rewrite. The Adreno 660 runs a chunk near 40 s or near 70 s as
+it heats, so its medians carry the heat; its best chunks fall 41.3 → 38.4 s.
+The iPad's chunks spread from 11 to 19 s with heat for either core.
+
+The matmuls are what is left: 60 % of a chunk's GPU time on the desktop, 72 %
+on the Adreno 750, 81 % on the Adreno 660 and 66 % on the M3, in
+onnxruntime-web's own kernel, which a graph cannot replace.
 
 ## Validate
 
