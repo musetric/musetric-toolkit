@@ -14,9 +14,11 @@ beat_this.onnx  spect [windows, frames, 128] → beat, downbeat [windows, frames
 
 The runtime computes the log-mel on **WebGPU** (`@musetric/fft` STFT + the mel
 filterbank exported here) and runs the graph on the WebGPU execution provider,
-the same way chords runs its CQT on WebGPU around ChordNet. Chunking,
-aggregation and peak picking also stay in the runtime: they are index
-arithmetic, not DSP.
+the same way chords runs its CQT on WebGPU around ChordNet. Chunking and
+aggregation also stay in the runtime: they are index arithmetic, not DSP. So
+does beat tracking: the runtime ports the Beat This! `dbn` postprocessing,
+madmom's `DBNDownBeatTrackingProcessor`, and the parity reference runs the
+original through the `madmom` dependency.
 
 One window per session call is not a detail — it is what makes the tracker
 runnable. Batching every window into a single call materializes an attention

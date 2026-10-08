@@ -10,10 +10,11 @@ from musetric_toolkit.rhythm_audio.bpm_estimator import summarize_rhythm
 # The rhythm step: the host sends the whole track, the mean of the channels at
 # 22050 Hz; the product builds the log-mel spectrogram, feeds it in windows of
 # 1500 frames with a border of 6 (packages/server/src/analysis/models.rs
-# beat_this_graph), keeps the first window's frames where windows overlap, picks
-# the beat peaks and summarizes the tempo. The original is Beat This! "final0"
-# in torch with its own features and postprocessing, in windows of the same
-# 1500 frames.
+# beat_this_graph), keeps the first window's frames where windows overlap,
+# tracks the beats with the dynamic Bayesian network of the Beat This! "dbn"
+# postprocessing and summarizes the tempo. The original is Beat This! "final0"
+# in torch with its own features and the same "dbn" postprocessing, in windows
+# of the same 1500 frames.
 
 SAMPLE_RATE = 22050
 FPS = 50
@@ -107,7 +108,7 @@ def run(args, writer: CaseWriter) -> None:
     stitched_downbeat = stitch(downbeat, starts, frames)
     writer.tensor("logits.beat", "reference", stitched_beat)
     writer.tensor("logits.downbeat", "reference", stitched_downbeat)
-    beats, downbeats = Postprocessor(type="minimal", fps=FPS)(
+    beats, downbeats = Postprocessor(type="dbn", fps=FPS)(
         torch.from_numpy(stitched_beat), torch.from_numpy(stitched_downbeat)
     )
     bpm, beats, downbeats, meter = summarize_rhythm(
@@ -121,6 +122,8 @@ def run(args, writer: CaseWriter) -> None:
     writer.tensor("result.meter", "reference", np.asarray([meter]))
 
     send_message({"type": "progress", "progress": 0.8})
-    author_beats, author_downbeats = Audio2Beats("final0", "cpu")(audio, SAMPLE_RATE)
+    author_beats, author_downbeats = Audio2Beats("final0", "cpu", dbn=True)(
+        audio, SAMPLE_RATE
+    )
     writer.tensor("result.beats", "author", np.asarray(author_beats))
     writer.tensor("result.downbeats", "author", np.asarray(author_downbeats))
