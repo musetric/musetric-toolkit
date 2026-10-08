@@ -66,20 +66,39 @@ before validating, so every later step sees the graph that ships.
 ## Adreno WebGPU rewrite
 
 On Adreno 6xx the stock graph returns silently wrong logits: shared-tile
-`Transpose`/`Conv`, inference `BatchNormalization`, and the 1500×1500
-time-attention MatMul. The shipping rewrite pins **513 frames**, replaces the
-broken Transpose/Conv families, and folds BatchNorm to Mul+Add. Rebuild:
+`Transpose`/`Conv` and inference `BatchNormalization`. The rewrite pins the
+author's **1500 frames**, replaces the broken Transpose/Conv families with
+index tables, and folds BatchNorm to Mul+Add.
+
+The attention needs one more step. Each of the nine attention cores keeps its
+scores in one `[b, h, 1500, 1500]` tensor: 137 MiB for the 16 heads of the main
+transformer, 275 MiB for the 32 head slices of a frontend block. That does not
+fit one storage binding on the phones: the Adreno 750 (Galaxy S24) reports
+`maxStorageBufferBindingSize` 128 MiB and returns garbage above it, the Adreno
+660 (OnePlus 9RT) reports 512 MiB yet breaks between 137 and 275 MiB; both are
+exact up to 120 MiB. `split_attention_webgpu.py` cuts every core along its head
+axis into groups of 68.7 MiB and concatenates the results, which changes no
+arithmetic. With the split, the whole graph matches the CPU provider within
+7.5e-5 on both phones, deterministically, and the two GPUs agree with each
+other.
+
+Until 2026-10 the shipped graph used 513-frame windows instead, which kept the
+scores small but gave the model a third of the context the author trained it
+with; without drums it lost the beat far more often.
 
 ```sh
 uv run --group export python scripts/onnx/beat_this/capture_shapes.py \
-  --model <export-dir>/beat_this.onnx --frames 513 --out shapes513.json
+  --model <export-dir>/beat_this.onnx --frames 1500 --out shapes1500.json
 uv run --group export python scripts/onnx/beat_this/rewrite_static_adreno.py \
-  --model <export-dir>/beat_this.onnx --shapes shapes513.json \
+  --model <export-dir>/beat_this.onnx --shapes shapes1500.json \
+  --out <export-dir>/beat_this_static.onnx
+uv run --group export python scripts/onnx/beat_this/split_attention_webgpu.py \
+  --model <export-dir>/beat_this_static.onnx --shapes shapes1500.json \
   --out <export-dir>/beat_this.onnx
 ```
 
-The host must always feed `[1, 513, 128]` (pad short clips; long tracks use
-overlapping 513-frame windows).
+The host must always feed `[1, 1500, 128]` (pad short clips; long tracks use
+overlapping 1500-frame windows).
 
 ## Files
 
@@ -90,7 +109,8 @@ overlapping 513-frame windows).
 | `validate_beat_this.py` | beat/downbeat time agreement of the ONNX vs the torch `File2Beats` reference |
 | `dump_reference_mel.py` | dump reference waveforms + log-mels, the parity gate for the runtime's WebGPU front end |
 | `capture_shapes.py` | pin every intermediate shape at a chosen frame count |
-| `rewrite_static_adreno.py` | replace broken Adreno Transpose/Conv/BatchNorm; ship at 513 frames |
+| `rewrite_static_adreno.py` | replace broken Adreno Transpose/Conv/BatchNorm; ship at 1500 frames |
+| `split_attention_webgpu.py` | split each attention core into head groups that fit one WebGPU storage binding |
 | `stage_beat_this.py` | copy the file set into the publish folder |
 | `publish_beat_this.py` | upload the staged folder to `musetric/beat-this-onnx` on HF |
 

@@ -13,19 +13,19 @@
   isolated BN kernel on Adreno 660 WebGPU zeroes about half the output
   nondeterministically; the affine form is bit-exact on device.
 
-Ship the rewrite pinned at 513 frames. A 1500-frame window materializes a
-1500x1500 time-attention MatMul that the same WebGPU EP computes incorrectly
-even after the rewrites above. 513-frame windows stay within the working
-kernel sizes (verified bit-clean on 9RT WebGPU vs wasm of the same file).
+Ship the rewrite pinned at the author's 1500 frames, then split the attention
+with split_attention_webgpu.py: a whole 1500x1500 scores tensor does not fit one
+storage binding on the phones and comes back wrong. The rewrite itself is the
+same at any frame count; only the index tables grow with it.
 
 Tensor shapes come from `capture_shapes.py` because ONNX shape inference
 cannot resolve runtime-computed Reshape shapes.
 
 Usage:
-    uv run python capture_shapes.py --model beat_this.onnx --frames 513 \
-        --out shapes513.json
+    uv run python capture_shapes.py --model beat_this.onnx --frames 1500 \
+        --out shapes1500.json
     uv run python rewrite_static_adreno.py --model beat_this.onnx \
-        --out beat_this.onnx --shapes shapes513.json \
+        --out beat_this.onnx --shapes shapes1500.json \
         [--no-conv] [--no-transpose] [--no-bn]
 """
 
