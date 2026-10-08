@@ -24,6 +24,7 @@ dependencies = [
     "swift-f0==0.3.0",
     "torchcrepe==0.0.24",
     "torchfcpe==0.0.4",
+    "madmom",
 ]
 
 [project.scripts]
@@ -59,6 +60,7 @@ explicit = true
 torch = { index = "pytorch-cu129" }
 torchaudio = { index = "pytorch-cu129" }
 torchvision = { index = "pytorch-cu129" }
+madmom = { git = "https://github.com/CPJKU/madmom", rev = "27f032e8947204902c675e5e341a3faf5dc86dae" }
 
 [dependency-groups]
 check = [

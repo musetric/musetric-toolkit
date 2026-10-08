@@ -45,7 +45,7 @@ def run_beat_this(audio_path: str):
         _emit_download(status="processing")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    file2beats = File2Beats(checkpoint_path="final0", device=device)
+    file2beats = File2Beats(checkpoint_path="final0", device=device, dbn=True)
 
     if not was_cached and cache_path.exists():
         size = cache_path.stat().st_size
